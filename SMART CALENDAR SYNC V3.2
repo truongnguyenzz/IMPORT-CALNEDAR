@@ -241,22 +241,24 @@ function SCV3_listCalendarRestEvents_(rangeStart,rangeEnd) {
  * hoặc chỉ đếm các dòng HTTP trong toàn bộ response.
  */
 function SCV3_parseBatchResponse_(responseText,boundary,idPrefix,expectedCount) {
-  const parts = String(responseText || '').split('--'+boundary);
+  const source = String(responseText || '');
   const results = new Map();
-  const idPattern = new RegExp('Content-ID\\s*:\\s*<(?:(?:response)-)?'+idPrefix+'-(\\d+)>','i');
-  parts.forEach(part => {
-    const idMatch = part.match(idPattern);
-    if (!idMatch) return;
-    const statusMatch = part.match(/HTTP\/1\.[01]\s+(\d{3})/i);
+  const idPattern = new RegExp('Content-ID\\s*:\\s*<(?:(?:response)-)?'+idPrefix+'-(\\d+)>','ig');
+  const matches = [];
+  let match;
+  while ((match = idPattern.exec(source)) !== null) matches.push({index:Number(match[1]),start:match.index,end:idPattern.lastIndex});
+  matches.forEach((part,index) => {
+    const nextStart = index+1<matches.length ? matches[index+1].start : source.length;
+    const responsePart = source.slice(part.start,nextStart);
+    const statusMatch = responsePart.match(/HTTP\/1\.[01]\s+(\d{3})/i);
     if (!statusMatch) return;
-    const index = Number(idMatch[1]);
-    results.set(index,{
+    results.set(part.index,{
       status:Number(statusMatch[1]),
-      response:part.trim().slice(-1200)
+      response:responsePart.trim().slice(-1200)
     });
   });
   if (results.size !== expectedCount) {
-    throw new Error('Không đối chiếu được đủ Content-ID từ Google Calendar ('+results.size+'/'+expectedCount+'). Phản hồi: '+String(responseText || '').slice(0,1200));
+    throw new Error('Không đối chiếu được đủ Content-ID từ Google Calendar ('+results.size+'/'+expectedCount+'). Phản hồi: '+source.slice(0,1200));
   }
   for (let i=0;i<expectedCount;i++) {
     if (!results.has(i)) throw new Error('Thiếu phản hồi Content-ID '+idPrefix+'-'+i+'.');
@@ -264,7 +266,6 @@ function SCV3_parseBatchResponse_(responseText,boundary,idPrefix,expectedCount) 
   return results;
 }
 
-/** Xác minh sự kiện đã thực sự tồn tại và đúng dữ liệu sau khi ghi. */
 function SCV3_verifyWrittenEvents_(entries,rangeStart,rangeEnd) {
   const events = SCV3_listCalendarRestEvents_(rangeStart,rangeEnd);
   const byId = new Map();
