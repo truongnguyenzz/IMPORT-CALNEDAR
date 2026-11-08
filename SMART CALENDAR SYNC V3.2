@@ -110,7 +110,17 @@ function SCV3_sync(options) {
     if (createSync) {
       const readyValues = sheet.getRange(SCV3.READY_FIRST_ROW,SCV3.TASK_FIRST_COL,7,SCV3.TASK_LAST_COL-SCV3.TASK_FIRST_COL+1).getDisplayValues();
 
-      // Lập toàn bộ task phụ trước, đọc từ sheet tương ứng với từng ngày.
+      // Lập task chính trước để xác định thời điểm kết thúc cuối cùng trong từng ngày.
+      const master = SCV3_buildMasterIndex_(sheet);
+      const primaryPlans = selectedDateInfo.map(day => ({
+        dayIndex:day.dayIndex,
+        date:day.date,
+        dateKey:day.dateKey,
+        plan:SCV3_buildDayPlan_(master,readyValues[day.dayIndex],day.date,gapMinutes,sleepStart,sleepDuration)
+      }));
+
+      // Task phụ được gom theo CLASS và xếp nối tiếp sau task chính cuối cùng.
+      const primaryByDate = new Map(primaryPlans.map(day => [day.dateKey,day.plan]));
       const secondaryPlans = selectedDateInfo.map(day => {
         const daySheetName = SCV3_DAYS[day.dayIndex];
         const daySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(daySheetName);
@@ -120,18 +130,9 @@ function SCV3_sync(options) {
           dayIndex:day.dayIndex,
           date:day.date,
           dateKey:day.dateKey,
-          plan:SCV3_buildSecondaryDayPlan_(daySheet,secondaryMaster,day.date)
+          plan:SCV3_buildSecondaryDayPlan_(daySheet,secondaryMaster,day.date,primaryByDate.get(day.dateKey) || [])
         };
       });
-
-      // Task chính vẫn dùng MASTER/READY của sheet TUẦN như phiên bản hiện tại.
-      const master = SCV3_buildMasterIndex_(sheet);
-      const primaryPlans = selectedDateInfo.map(day => ({
-        dayIndex:day.dayIndex,
-        date:day.date,
-        dateKey:day.dateKey,
-        plan:SCV3_buildDayPlan_(master,readyValues[day.dayIndex],day.date,gapMinutes,sleepStart,sleepDuration)
-      }));
 
       const eventById = new Map();
       existingEvents.forEach(event => {
@@ -564,7 +565,7 @@ function SCV3_buildSecondaryIndex_(daySheet) {
  * Duyệt từng hàng từ trên xuống, trong mỗi hàng duyệt J/L/N/P từ trái sang phải.
  * K/M/O/Q là thời lượng phút để xếp lịch; DURING trong mô tả lấy từ cột E (giờ).
  */
-function SCV3_buildSecondaryDayPlan_(daySheet,master,date) {
+function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
   const firstRow = SCV3.SECONDARY_FIRST_ROW;
   const rowCount = SCV3.SECONDARY_LAST_ROW-firstRow+1;
   const values = daySheet.getRange(firstRow,8,rowCount,10).getDisplayValues(); // H:Q
@@ -574,81 +575,72 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date) {
     {taskOffset:6,durationOffset:7},
     {taskOffset:8,durationOffset:9}
   ];
-  const periods = {
-    'SÁNG':{startHour:6,endHour:12},
-    'TRƯA':{startHour:12,endHour:15},
-    'CHIỀU':{startHour:15,endHour:17},
-    'TỐI':{startHour:17,endHour:23}
-  };
-  let currentPeriod = null;
-  let cursor = null;
-  let occurrence = {};
-  const plan = [];
+  const groups = new Map();
+  const occurrence = {};
 
+  // Đọc task theo thứ tự trên bảng lịch, gom các task cùng CLASS (cột B).
   for (let r=0;r<values.length;r++) {
-    const periodText = SCV3_normalize_(values[r][0]);
-    if (periodText) {
-      const periodKey = Object.keys(periods).find(name => periodText.startsWith(name));
-      if (!periodKey) throw new Error('Không nhận diện được BUỔI tại '+daySheet.getName()+'!H'+(firstRow+r)+': '+values[r][0]);
-      if (periodKey !== currentPeriod) {
-        currentPeriod = periodKey;
-        cursor = new Date(date);
-        cursor.setHours(periods[periodKey].startHour,0,0,0);
-      }
-    }
-    if (!currentPeriod || !cursor) continue;
-
     for (const slot of slots) {
       const taskName = String(values[r][slot.taskOffset] || '').trim();
       if (!taskName) continue;
-
-      // "Ngủ khuya" đã được tạo riêng thành sự kiện NGỦ ĐÊM trong task chính.
-      // Không import lại từ bảng task phụ để tránh chiếm thời lượng buổi TỐI.
       if (SCV3_normalize_(taskName) === 'NGỦ KHUYA') continue;
 
       const details = master[SCV3_normalize_(taskName)];
-      if (!details) {
-        throw new Error('Không tìm thấy task phụ "'+taskName+'" trong bảng A1:F25 của sheet '+daySheet.getName()+'.');
-      }
-      if (!Number.isFinite(details.duration) || details.duration <= 0) {
-        throw new Error('DURING ở cột E không hợp lệ cho task phụ: '+taskName+' ('+daySheet.getName()+').');
-      }
+      if (!details) throw new Error('Không tìm thấy task phụ "'+taskName+'" trong bảng A1:F25 của sheet '+daySheet.getName()+'.');
+      if (!Number.isFinite(details.duration) || details.duration <= 0) throw new Error('DURING ở cột E không hợp lệ cho task phụ: '+taskName+' ('+daySheet.getName()+').');
 
       const durationMinutes = SCV3_number_(values[r][slot.durationOffset]);
       if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-        throw new Error('Thời lượng phút tại '+daySheet.getName()+'!'+
-          SCV3_columnLetter_(8+slot.durationOffset)+(firstRow+r)+' không hợp lệ cho task "'+taskName+'".');
+        throw new Error('Thời lượng phút tại '+daySheet.getName()+'!'+SCV3_columnLetter_(8+slot.durationOffset)+(firstRow+r)+' không hợp lệ cho task "'+taskName+'".');
       }
 
-      const start = new Date(cursor);
-      const end = new Date(start.getTime()+durationMinutes*60*1000);
-      const periodEnd = new Date(date);
-      periodEnd.setHours(periods[currentPeriod].endHour,0,0,0);
-      if (end.getTime() > periodEnd.getTime()) {
-        throw new Error('Các task phụ trong buổi '+currentPeriod+' của sheet '+daySheet.getName()+
-          ' vượt quá khung giờ kết thúc '+periods[currentPeriod].endHour+':00. Task gây vượt giờ: '+taskName+'.');
-      }
+      const groupKey = SCV3_normalize_(details.className || '(KHÔNG PHÂN NHÓM)');
+      if (!groups.has(groupKey)) groups.set(groupKey,[]);
+      groups.get(groupKey).push({taskName:taskName,details:details,durationMinutes:durationMinutes});
+    }
+  }
 
-      const key = SCV3_normalize_(taskName);
+  // Bắt đầu sau task chính kết thúc muộn nhất; bỏ qua sự kiện ngủ đêm.
+  let cursorTime = null;
+  (primaryPlan || []).forEach(item => {
+    if (item.type === 'TASK' && (cursorTime === null || item.end > cursorTime)) cursorTime = item.end;
+  });
+  if (cursorTime === null) {
+    const fallback = new Date(date);
+    fallback.setHours(Math.floor(SCV3.START_HOUR),Math.round((SCV3.START_HOUR%1)*60),0,0);
+    cursorTime = fallback.getTime();
+  }
+
+  const plan = [];
+  let groupIndex = 0;
+  for (const tasks of groups.values()) {
+    // Chỉ nghỉ 15 phút khi chuyển sang nhóm CLASS tiếp theo.
+    if (groupIndex > 0) cursorTime += 15*60*1000;
+
+    for (const task of tasks) {
+      const start = cursorTime;
+      const end = start + task.durationMinutes*60*1000;
+      const key = SCV3_normalize_(task.taskName);
       occurrence[key] = (occurrence[key] || 0)+1;
-      const id = SCV3_makeId_(date,'SECONDARY|'+taskName,occurrence[key]);
+      const id = SCV3_makeId_(date,'SECONDARY|'+task.taskName,occurrence[key]);
       const description = SCV3.MARKER+id+']]'+
-        '\n🏫 CLASS: '+details.className+
-        '\n📌 CÔNG VIỆC: '+details.name+
-        '\n📝 NỘI DUNG: '+details.content+
-        '\n⏱️ DURING: '+details.duration;
+        '\n🏫 CLASS: '+task.details.className+
+        '\n📌 CÔNG VIỆC: '+task.details.name+
+        '\n📝 NỘI DUNG: '+task.details.content+
+        '\n⏱️ DURING: '+task.details.duration;
       plan.push({
         id:id,
         type:'SECONDARY_TASK',
-        name:details.name,
-        title:details.name,
+        name:task.details.name,
+        title:task.details.name,
         description:description,
-        start:start.getTime(),
-        end:end.getTime(),
+        start:start,
+        end:end,
         color:SCV3.SECONDARY_COLOR
       });
-      cursor = end;
+      cursorTime = end;
     }
+    groupIndex++;
   }
   return plan;
 }
