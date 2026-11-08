@@ -257,7 +257,7 @@ function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys)
     }
     const data = JSON.parse(response.getContentText() || '{}');
     (data.items || []).forEach(event => {
-      const managed = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+      const managed = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
       if (!managed || !event.id) return;
       const startValue = event.start && (event.start.dateTime || event.start.date);
       if (!startValue) return;
