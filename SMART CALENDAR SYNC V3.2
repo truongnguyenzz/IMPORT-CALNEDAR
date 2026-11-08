@@ -493,9 +493,28 @@ function SCV3_processSyncBatch_(state,token) {
     // Đọc lại Calendar sau mỗi batch. Không ghi nhận thành công nếu chưa thấy đủ event.
     const verification = SCV3_verifyWrittenEvents_(writes,rangeStart,rangeEnd);
     if (!verification.success) {
+      // Giữ lại phản hồi từng lệnh để phân biệt lỗi INSERT với lỗi đọc/xác minh.
+      const responseDiagnostics = writes.map((entry,index) => {
+        const part = responseByIndex.get(index);
+        return {
+          title:entry.op.item.title,
+          id:entry.op.item.id,
+          method:entry.event ? 'PATCH' : 'POST',
+          httpStatus:part.status,
+          response:part.response.slice(-900)
+        };
+      });
+      const diagnostic = {
+        calendar:'primary',
+        rangeStart:rangeStart.toISOString(),
+        rangeEnd:rangeEnd.toISOString(),
+        eventsReadBack:SCV3_listCalendarRestEvents_(rangeStart,rangeEnd).length,
+        batchItems:responseDiagnostics,
+        verificationFailures:verification.failures
+      };
       SCV3_saveJob_(state);
       return {success:false,done:false,paused:true,retryable:false,token:token,progress:state.cursor,total:state.operations.length,
-        error:'Batch đã phản hồi nhưng xác minh sau ghi thất bại. Chưa tăng bộ đếm và chưa chuyển lô. '+verification.failures.join(' | '),stats:state.stats};
+        error:'XÁC MINH SAU BATCH THẤT BẠI. Không tăng bộ đếm. Chẩn đoán: '+JSON.stringify(diagnostic),stats:state.stats};
     }
 
     // Chỉ cập nhật thống kê sau khi tất cả thao tác trong lô đã được xác minh.
