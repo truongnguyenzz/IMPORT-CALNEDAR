@@ -268,17 +268,19 @@ function SCV3_parseBatchResponse_(responseText,boundary,idPrefix,expectedCount) 
 
 function SCV3_verifyWrittenEvents_(entries,rangeStart,rangeEnd) {
   const events = SCV3_listCalendarRestEvents_(rangeStart,rangeEnd);
-  const byId = new Map();
+  // ID trong marker là mã quản lý ổn định của Smart Calendar.
+  // Google tự cấp event.id thật để tránh HTTP 409 do ID tự đặt bị xung đột.
+  const byManagedId = new Map();
   events.forEach(event => {
-    if (event.id && !byId.has(event.id)) byId.set(event.id,event);
+    const marker = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
+    if (marker && marker[1] && !byManagedId.has(marker[1])) byManagedId.set(marker[1],event);
   });
   const failures = [];
   entries.forEach(entry => {
     const item = entry.op.item;
-    const expectedId = entry.event ? entry.event.id : item.id;
-    const event = byId.get(expectedId);
+    const event = byManagedId.get(item.id);
     if (!event) {
-      failures.push(item.title+': không tìm thấy event.id='+expectedId);
+      failures.push(item.title+': không tìm thấy sự kiện có mã quản lý='+item.id);
       return;
     }
     const marker = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
@@ -290,7 +292,7 @@ function SCV3_verifyWrittenEvents_(entries,rangeStart,rangeEnd) {
       actualStart === item.start &&
       actualEnd === item.end &&
       (!entry.body.colorId || String(event.colorId || '') === entry.body.colorId);
-    if (!valid) failures.push(item.title+': event tồn tại nhưng dữ liệu không khớp (id='+expectedId+').');
+    if (!valid) failures.push(item.title+': sự kiện tồn tại nhưng dữ liệu không khớp (mã quản lý='+item.id+').');
   });
   return {success:failures.length===0,failures:failures};
 }
@@ -453,7 +455,8 @@ function SCV3_processSyncBatch_(state,token) {
       ? '/calendar/v3/calendars/primary/events/'+encodeURIComponent(entry.event.id)
       : '/calendar/v3/calendars/primary/events';
     const body = Object.assign({},entry.body);
-    if (!isUpdate) body.id = item.id;
+    // POST không gửi body.id: để Google Calendar tự cấp event.id duy nhất.
+    // item.id vẫn được lưu trong [[SCV2_ID:...]] để nhận diện và PATCH ở các lần sync sau.
     lines.push('--'+boundary,'Content-Type: application/http','Content-ID: <sync-'+index+'>','',
       method+' '+path+' HTTP/1.1',
       'Content-Type: application/json',
