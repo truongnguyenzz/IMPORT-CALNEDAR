@@ -174,7 +174,7 @@ function SCV3_processBatch_(token) {
   // Mỗi lô xử lý tối đa 10 thao tác, áp dụng chung cho tạo/cập nhật/xóa.
   const OPERATIONS_PER_BATCH = 10;
   const MAX_OPERATIONS_PER_RUN = OPERATIONS_PER_BATCH;
-  const PAUSE_BETWEEN_WRITES_MS = 1200;
+  const PAUSE_BETWEEN_WRITES_MS = 800;
   const calendar = CalendarApp.getDefaultCalendar();
   let processed = 0;
   while (state.cursor < state.operations.length && processed < MAX_OPERATIONS_PER_RUN) {
@@ -704,7 +704,7 @@ button{border:0;cursor:pointer;font-weight:bold}
     $('message').textContent = 'Đang đồng bộ... '+percent+'%';
     setTimeout(function(){
       google.script.run.withSuccessHandler(handleBatch).withFailureHandler(showError).SCV3_continueSync(data.token);
-    },1500);
+    },800);
   }
   function finish(data){
     running = false;
