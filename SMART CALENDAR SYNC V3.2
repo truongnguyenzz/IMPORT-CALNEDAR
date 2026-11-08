@@ -602,6 +602,10 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date) {
       const taskName = String(values[r][slot.taskOffset] || '').trim();
       if (!taskName) continue;
 
+      // "Ngủ khuya" đã được tạo riêng thành sự kiện NGỦ ĐÊM trong task chính.
+      // Không import lại từ bảng task phụ để tránh chiếm thời lượng buổi TỐI.
+      if (SCV3_normalize_(taskName) === 'NGỦ KHUYA') continue;
+
       const details = master[SCV3_normalize_(taskName)];
       if (!details) {
         throw new Error('Không tìm thấy task phụ "'+taskName+'" trong bảng A1:F25 của sheet '+daySheet.getName()+'.');
