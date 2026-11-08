@@ -171,13 +171,23 @@ function SCV3_continueSync(token) {
 function SCV3_processBatch_(token) {
   const state = SCV3_loadJob_(token);
   if (!state) throw new Error('Không tìm thấy tiến trình đồng bộ hoặc tiến trình đã hết hạn. Hãy bắt đầu lại.');
-  // Mỗi lô xử lý tối đa 10 thao tác, áp dụng chung cho tạo/cập nhật/xóa.
-  const OPERATIONS_PER_BATCH = 10;
-  const MAX_OPERATIONS_PER_RUN = OPERATIONS_PER_BATCH;
+  // Tách riêng quy mô lô: xóa 20 thao tác; tạo/cập nhật 10 thao tác.
+  const DELETE_OPERATIONS_PER_BATCH = 20;
+  const SYNC_OPERATIONS_PER_BATCH = 10;
   const PAUSE_BETWEEN_WRITES_MS = 800;
   const calendar = CalendarApp.getDefaultCalendar();
   let processed = 0;
-  while (state.cursor < state.operations.length && processed < MAX_OPERATIONS_PER_RUN) {
+  // Mỗi lượt máy chủ chỉ xử lý một loại thao tác, không trộn giới hạn hai cơ chế.
+  const firstOperation = state.operations[state.cursor];
+  const currentBatchKind = firstOperation ? firstOperation.kind : null;
+  const maxOperationsThisRun = currentBatchKind === 'DELETE'
+    ? DELETE_OPERATIONS_PER_BATCH
+    : SYNC_OPERATIONS_PER_BATCH;
+  while (
+    state.cursor < state.operations.length &&
+    processed < maxOperationsThisRun &&
+    state.operations[state.cursor].kind === currentBatchKind
+  ) {
     const op = state.operations[state.cursor];
     try {
       if (op.kind === 'DELETE') {
@@ -670,7 +680,8 @@ button{border:0;cursor:pointer;font-weight:bold}
     log('Số ngày được chọn: '+selectedDays.length);
     log('Dọn lịch cũ: '+(options.clearOld ? 'BẬT' : 'TẮT'));
     log('Tạo/cập nhật: '+(options.createSync ? 'BẬT' : 'TẮT'));
-    log('Mỗi lô: tối đa 10 thao tác (bao gồm tạo, cập nhật và xóa).');
+    log('Cơ chế xóa: tối đa 20 thao tác/lô.');
+    log('Cơ chế tạo/cập nhật: tối đa 10 thao tác/lô.');
     if (options.clearOld) log('Xóa tất cả task và sự kiện ngủ đêm thuộc ngày đã chọn.');
     if (options.createSync){
       log('Khoảng nghỉ: '+options.gapMinutes+' phút');
