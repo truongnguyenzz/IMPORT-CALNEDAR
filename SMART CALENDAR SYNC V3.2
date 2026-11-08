@@ -486,8 +486,8 @@ function SCV3_processSyncBatch_(state,token) {
       const rejectedIndex = writes.indexOf(rejected);
       const result = responseByIndex.get(rejectedIndex);
       SCV3_saveJob_(state);
-      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
-        error:'Google Calendar từ chối "'+rejected.op.item.title+'" (HTTP '+result.status+'). Chi tiết: '+result.response.slice(-700),stats:state.stats};
+      return {success:false,done:false,paused:true,retryable:false,token:token,progress:state.cursor,total:state.operations.length,
+        error:'Google Calendar từ chối "'+rejected.op.item.title+'" (HTTP '+result.status+'). Chi tiết: '+result.response.slice(-1000),stats:state.stats};
     }
 
     // Đọc lại Calendar sau mỗi batch. Không ghi nhận thành công nếu chưa thấy đủ event.
