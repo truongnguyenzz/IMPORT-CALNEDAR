@@ -171,10 +171,9 @@ function SCV3_continueSync(token) {
 function SCV3_processBatch_(token) {
   const state = SCV3_loadJob_(token);
   if (!state) throw new Error('Không tìm thấy tiến trình đồng bộ hoặc tiến trình đã hết hạn. Hãy bắt đầu lại.');
-  // Mỗi lô gồm 3 thao tác; mỗi lần gọi máy chủ xử lý tối đa 10 lô.
-  const OPERATIONS_PER_BATCH = 3;
-  const BATCHES_PER_RUN = 10;
-  const MAX_OPERATIONS_PER_RUN = OPERATIONS_PER_BATCH * BATCHES_PER_RUN;
+  // Mỗi lô xử lý tối đa 10 thao tác, áp dụng chung cho tạo/cập nhật/xóa.
+  const OPERATIONS_PER_BATCH = 10;
+  const MAX_OPERATIONS_PER_RUN = OPERATIONS_PER_BATCH;
   const PAUSE_BETWEEN_WRITES_MS = 1200;
   const calendar = CalendarApp.getDefaultCalendar();
   let processed = 0;
@@ -671,7 +670,7 @@ button{border:0;cursor:pointer;font-weight:bold}
     log('Số ngày được chọn: '+selectedDays.length);
     log('Dọn lịch cũ: '+(options.clearOld ? 'BẬT' : 'TẮT'));
     log('Tạo/cập nhật: '+(options.createSync ? 'BẬT' : 'TẮT'));
-    log('Mỗi lượt: '+10+' lô × '+3+' thao tác = tối đa 30 thao tác.');
+    log('Mỗi lô: tối đa 10 thao tác (bao gồm tạo, cập nhật và xóa).');
     if (options.clearOld) log('Xóa tất cả task và sự kiện ngủ đêm thuộc ngày đã chọn.');
     if (options.createSync){
       log('Khoảng nghỉ: '+options.gapMinutes+' phút');
