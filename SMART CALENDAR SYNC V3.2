@@ -650,7 +650,7 @@ function SCV3_buildSecondaryIndex_(daySheet) {
  * - Khung buổi ở cột H là khung ưu tiên, không phải ranh giới cứng tuyệt đối.
  * - Task được đọc theo đúng thứ tự hàng/cột trên bảng H4:Q16, không gom theo CLASS.
  * - Tìm chỗ trong buổi ưu tiên trước; nếu không đủ chỗ, xét đúng một buổi liền kề.
- * - Các task sinh hoạt ăn uống được giữ STRICT trong buổi gốc.
+ * - Theo lựa chọn B, mọi task phụ được phép chuyển sang buổi liền kề khi cần.
  * - Không bao giờ ghi đè hoặc di chuyển task chính / giờ ngủ.
  */
 function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
@@ -697,8 +697,8 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
     }
   }
 
-  // Ưu tiên xếp các task STRICT trước để task linh hoạt không chiếm mất khung giờ sinh hoạt cố định.
-  tasks.sort((a,b) => Number(b.strict)-Number(a.strict) || a.row-b.row);
+  // Giữ thứ tự khai báo trên bảng; mọi task đều linh hoạt theo lựa chọn B.
+  tasks.sort((a,b) => a.row-b.row);
 
   // Toàn bộ task chính và sự kiện ngủ là khoảng bận không thể xâm phạm.
   const occupied = (primaryPlan || [])
@@ -764,12 +764,13 @@ function SCV3_parseSecondaryPeriod_(label) {
 }
 
 /**
- * Task ăn uống có nội dung nhận diện rõ là giờ ăn được giữ STRICT.
- * Các task phụ còn lại mặc định ADJACENT: chỉ xét buổi ngay trước/sau.
+ * Theo lựa chọn B, mọi task phụ mặc định đều linh hoạt:
+ * ưu tiên buổi được ghi trên bảng, nhưng được phép chuyển sang buổi liền kề
+ * nếu không có khoảng trống liên tục đủ dài trong buổi ưu tiên.
+ * Không tự suy đoán task nào là STRICT chỉ từ tên gọi.
  */
 function SCV3_isStrictAuxiliaryTask_(taskName,details) {
-  const text = (String(taskName || '')+' '+String(details.name || '')+' '+String(details.content || '')).toUpperCase();
-  return /ĂN UỐNG|ĂN SÁNG|ĂN TRƯA|ĂN TỐI|BỮA SÁNG|BỮA TRƯA|BỮA TỐI|VỆ SINH SÁNG|BUỔI SÁNG|BUỔI TRƯA|BUỔI CHIỀU|BUỔI TỐI/.test(text);
+  return false;
 }
 
 /** Tạo cửa sổ ưu tiên và tối đa hai cửa sổ liền kề cho từng task. */
