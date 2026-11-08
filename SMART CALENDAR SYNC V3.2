@@ -98,13 +98,9 @@ function SCV3_sync(options) {
     const stats = {created:0,updated:0,unchanged:0,deleted:0,skipped:0,total:0};
     const actions = [];
     if (clearOld) {
-      existingEvents.forEach(event => {
-        const id = SCV3_getManagedId_(event);
-        if (!id) return;
-        const eventStartKey = SCV3_dateKey_(event.getStartTime());
-        if (!selectedDateKeys.has(eventStartKey)) return;
-        operations.push({kind:'DELETE',eventId:event.getId(),title:event.getTitle(),day:eventStartKey});
-      });
+      // Lấy REST event ID chuẩn để gửi nhiều lệnh xóa trong một HTTP batch.
+      SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys)
+        .forEach(op => operations.push(op));
     }
     if (createSync) {
       const master = SCV3_buildMasterIndex_(sheet);
@@ -171,120 +167,174 @@ function SCV3_continueSync(token) {
 function SCV3_processBatch_(token) {
   const state = SCV3_loadJob_(token);
   if (!state) throw new Error('Không tìm thấy tiến trình đồng bộ hoặc tiến trình đã hết hạn. Hãy bắt đầu lại.');
-  // Tách riêng quy mô lô: xóa 20 thao tác; tạo/cập nhật 10 thao tác.
-  const DELETE_OPERATIONS_PER_BATCH = 20;
   const SYNC_OPERATIONS_PER_BATCH = 10;
   const PAUSE_BETWEEN_WRITES_MS = 500;
+  const firstOperation = state.operations[state.cursor];
+  if (firstOperation && firstOperation.kind === 'DELETE') {
+    return SCV3_processDeleteBatch_(state,token);
+  }
   const calendar = CalendarApp.getDefaultCalendar();
   let processed = 0;
-  // Mỗi lượt máy chủ chỉ xử lý một loại thao tác, không trộn giới hạn hai cơ chế.
-  const firstOperation = state.operations[state.cursor];
-  const currentBatchKind = firstOperation ? firstOperation.kind : null;
-  const maxOperationsThisRun = currentBatchKind === 'DELETE'
-    ? DELETE_OPERATIONS_PER_BATCH
-    : SYNC_OPERATIONS_PER_BATCH;
-  while (
-    state.cursor < state.operations.length &&
-    processed < maxOperationsThisRun &&
-    state.operations[state.cursor].kind === currentBatchKind
-  ) {
+  while (state.cursor < state.operations.length &&
+         processed < SYNC_OPERATIONS_PER_BATCH &&
+         state.operations[state.cursor].kind === 'SYNC') {
     const op = state.operations[state.cursor];
     try {
-      if (op.kind === 'DELETE') {
-        const event = calendar.getEventById(op.eventId);
-        if (event) {
-          event.deleteEvent();
-          state.stats.deleted++;
-          state.actions.push({day:op.day,action:'DELETED',title:op.title});
-          Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
-        } else {
-          state.stats.skipped++;
-        }
-      } else {
-        const item = op.item;
-        const dayStart = new Date(item.start);
-        dayStart.setHours(0,0,0,0);
-        const dayEnd = new Date(dayStart);
-        dayEnd.setDate(dayEnd.getDate()+2);
-        const events = calendar.getEvents(dayStart,dayEnd);
-        let event = null;
-        for (const candidate of events) {
-          if (SCV3_getManagedId_(candidate) === item.id) {
-            event = candidate;
-            break;
-          }
-        }
-        if (!event && op.existingEventId) event = calendar.getEventById(op.existingEventId);
-        if (!event) event = SCV3_findLegacyEvent_(events,item);
-        let action = '';
-        if (!event) {
-          event = calendar.createEvent(item.title,new Date(item.start),new Date(item.end),{description:item.description});
-          state.stats.created++;
-          action = 'CREATED';
-          Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
-        } else {
-          const same = event.getTitle() === item.title &&
-            (event.getDescription() || '') === item.description &&
-            event.getStartTime().getTime() === item.start &&
-            event.getEndTime().getTime() === item.end;
-          if (same) {
-            state.stats.unchanged++;
-            action = 'UNCHANGED';
-          } else {
-            event.setTitle(item.title);
-            event.setTime(new Date(item.start),new Date(item.end));
-            event.setDescription(item.description);
-            state.stats.updated++;
-            action = 'UPDATED';
-            Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
-          }
-        }
-        if (item.color) {
-          try { event.setColor(item.color); } catch (colorError) {}
-        }
-        state.actions.push({day:SCV3_DAYS[op.dayIndex],action:action,title:item.title});
+      const item = op.item;
+      const dayStart = new Date(item.start);
+      dayStart.setHours(0,0,0,0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate()+2);
+      const events = calendar.getEvents(dayStart,dayEnd);
+      let event = null;
+      for (const candidate of events) {
+        if (SCV3_getManagedId_(candidate) === item.id) { event = candidate; break; }
       }
+      if (!event && op.existingEventId) event = calendar.getEventById(op.existingEventId);
+      if (!event) event = SCV3_findLegacyEvent_(events,item);
+      let action = '';
+      if (!event) {
+        event = calendar.createEvent(item.title,new Date(item.start),new Date(item.end),{description:item.description});
+        state.stats.created++;
+        action = 'CREATED';
+        Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
+      } else {
+        const same = event.getTitle() === item.title &&
+          (event.getDescription() || '') === item.description &&
+          event.getStartTime().getTime() === item.start &&
+          event.getEndTime().getTime() === item.end;
+        if (same) {
+          state.stats.unchanged++;
+          action = 'UNCHANGED';
+        } else {
+          event.setTitle(item.title);
+          event.setTime(new Date(item.start),new Date(item.end));
+          event.setDescription(item.description);
+          state.stats.updated++;
+          action = 'UPDATED';
+          Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
+        }
+      }
+      if (item.color) { try { event.setColor(item.color); } catch (colorError) {} }
+      state.actions.push({day:SCV3_DAYS[op.dayIndex],action:action,title:item.title});
       state.cursor++;
       processed++;
       SCV3_saveJob_(state);
     } catch (error) {
       SCV3_saveJob_(state);
-      return {
-        success:false,
-        done:false,
-        paused:true,
-        token:token,
-        progress:state.cursor,
-        total:state.operations.length,
-        error:String(error && error.message ? error.message : error),
-        stats:state.stats
-      };
+      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+        error:String(error && error.message ? error.message : error),stats:state.stats};
     }
   }
-  const done = state.cursor >= state.operations.length;
-  if (done) {
-    const result = {
-      success:true,
-      done:true,
-      days:state.days,
-      stats:state.stats,
-      actions:state.actions,
-      settings:state.settings
-    };
-    SCV3_deleteJob_(token);
-    return result;
-  }
+  if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
   SCV3_saveJob_(state);
-  return {
-    success:true,
-    done:false,
-    paused:false,
-    token:token,
-    progress:state.cursor,
-    total:state.operations.length,
-    stats:state.stats
-  };
+  return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
 }
+/**
+ * CalendarApp.getId() là iCalUID; REST batch DELETE cần event.id.
+ * Vì vậy đọc danh sách qua Calendar API để lấy đúng REST ID.
+ */
+function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys) {
+  const baseUrl = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+  const params = [
+    'timeMin='+encodeURIComponent(rangeStart.toISOString()),
+    'timeMax='+encodeURIComponent(rangeEnd.toISOString()),
+    'maxResults=2500',
+    'singleEvents=true'
+  ];
+  const operations = [];
+  let pageToken = '';
+  do {
+    const url = baseUrl+'?'+params.join('&')+(pageToken ? '&pageToken='+encodeURIComponent(pageToken) : '');
+    const response = UrlFetchApp.fetch(url,{
+      method:'get',
+      headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},
+      muteHttpExceptions:true
+    });
+    const status = response.getResponseCode();
+    if (status < 200 || status >= 300) {
+      throw new Error('Không thể đọc danh sách Google Calendar (HTTP '+status+'): '+response.getContentText().slice(0,500));
+    }
+    const data = JSON.parse(response.getContentText() || '{}');
+    (data.items || []).forEach(event => {
+      const managed = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+      if (!managed || !event.id) return;
+      const startValue = event.start && (event.start.dateTime || event.start.date);
+      if (!startValue) return;
+      const eventDate = new Date(startValue);
+      if (isNaN(eventDate.getTime())) return;
+      const dateKey = SCV3_dateKey_(eventDate);
+      if (!selectedDateKeys.has(dateKey)) return;
+      operations.push({kind:'DELETE',eventId:event.id,title:String(event.summary || ''),day:dateKey});
+    });
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return operations;
+}
+
+/** Xóa tối đa 20 task bằng một HTTP multipart batch request. */
+function SCV3_processDeleteBatch_(state,token) {
+  const batch = state.operations.slice(state.cursor,state.cursor+20);
+  if (!batch.length) return null;
+  const boundary = 'scv3_batch_'+Utilities.getUuid().replace(/-/g,'');
+  const lines = [];
+  batch.forEach((op,index) => {
+    lines.push('--'+boundary,'Content-Type: application/http','Content-ID: <delete-'+index+'>','',
+      'DELETE /calendar/v3/calendars/primary/events/'+encodeURIComponent(op.eventId),'');
+  });
+  lines.push('--'+boundary+'--');
+  try {
+    const response = UrlFetchApp.fetch('https://www.googleapis.com/batch/calendar/v3',{
+      method:'post',
+      contentType:'multipart/mixed; boundary='+boundary,
+      payload:lines.join('\\r\\n'),
+      headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},
+      muteHttpExceptions:true
+    });
+    const httpStatus = response.getResponseCode();
+    const responseText = response.getContentText();
+    if (httpStatus < 200 || httpStatus >= 300) {
+      throw new Error('Batch delete thất bại (HTTP '+httpStatus+'): '+responseText.slice(0,700));
+    }
+    const statuses = [];
+    const regex = /HTTP\\/1\\.[01]\\s+(\\d{3})[^\\r\\n]*/g;
+    let match;
+    while ((match = regex.exec(responseText)) !== null) statuses.push(Number(match[1]));
+    if (statuses.length !== batch.length) {
+      throw new Error('Không đọc đủ kết quả batch delete ('+statuses.length+'/'+batch.length+'). '+responseText.slice(0,700));
+    }
+    let completed = 0;
+    for (let i=0;i<batch.length;i++) {
+      const status = statuses[i], op = batch[i];
+      if ((status >= 200 && status < 300) || status === 404 || status === 410) {
+        if (status >= 200 && status < 300) {
+          state.stats.deleted++;
+          state.actions.push({day:op.day,action:'DELETED',title:op.title});
+        } else state.stats.skipped++;
+        completed++;
+      } else break;
+    }
+    state.cursor += completed;
+    SCV3_saveJob_(state);
+    if (completed < batch.length) {
+      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+        error:'Google Calendar từ chối một lệnh trong batch (HTTP '+statuses[completed]+').',stats:state.stats};
+    }
+    if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
+    return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
+  } catch (error) {
+    SCV3_saveJob_(state);
+    return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+      error:String(error && error.message ? error.message : error),stats:state.stats};
+  }
+}
+
+function SCV3_finishJob_(state,token) {
+  const result = {success:true,done:true,days:state.days,stats:state.stats,actions:state.actions,settings:state.settings};
+  SCV3_deleteJob_(token);
+  return result;
+}
+
 function SCV3_saveJob_(state) {
   const props = PropertiesService.getScriptProperties();
   const key = 'SCV3_JOB_'+state.token;
@@ -551,7 +601,7 @@ button{border:0;cursor:pointer;font-weight:bold}
     <div class="heading">⚙️ TÙY CHỌN ĐỒNG BỘ</div>
     <label class="option"><input type="checkbox" id="clear">Xóa toàn bộ lịch Smart Calendar (task + ngủ đêm)</label>
     <label class="option"><input type="checkbox" id="create" checked>Tạo / cập nhật lịch mới</label>
-    <div class="note">Khi bật Xóa, hệ thống xóa tất cả sự kiện có mã quản lý Smart Calendar trong những ngày đã chọn, bao gồm task và ngủ đêm. Không phụ thuộc READY task hoặc các thiết lập thời gian. Không xóa lịch cá nhân.</div>
+    <div class="note">Khi bật Xóa, hệ thống xóa tất cả sự kiện có mã quản lý Smart Calendar trong những ngày đã chọn, bao gồm task và ngủ đêm. Không phụ thuộc READY task hoặc các thiết lập thời gian. Không xóa lịch cá nhân. Xóa theo lô 20 lệnh trong một yêu cầu mạng.</div>
   </div>
   <button id="start" class="start" type="button" disabled>ĐANG TẢI DỮ LIỆU...</button>
 </div>
@@ -680,8 +730,8 @@ button{border:0;cursor:pointer;font-weight:bold}
     log('Số ngày được chọn: '+selectedDays.length);
     log('Dọn lịch cũ: '+(options.clearOld ? 'BẬT' : 'TẮT'));
     log('Tạo/cập nhật: '+(options.createSync ? 'BẬT' : 'TẮT'));
-    log('Cơ chế xóa: tối đa 20 thao tác/lô.');
-    log('Cơ chế tạo/cập nhật: tối đa 10 thao tác/lô.');
+    log('Cơ chế xóa: tối đa 20 lệnh DELETE trong một HTTP batch request.');
+    log('Cơ chế tạo/cập nhật: tối đa 10 thao tác/lượt máy chủ.');
     if (options.clearOld) log('Xóa tất cả task và sự kiện ngủ đêm thuộc ngày đã chọn.');
     if (options.createSync){
       log('Khoảng nghỉ: '+options.gapMinutes+' phút');
