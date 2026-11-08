@@ -1,22 +1,35 @@
-
 /***************************************************************
- * SMART CALENDAR SYNC V2.2
+ * SMART CALENDAR SYNC V3 — FAST MODE
+ *
+ * SHEET: TUẦN
  * READY DATE: M16:M22
  * READY TASK: O,Q,S,U,W,Y,AA,AC,AE,AG,AI,AK
- * MASTER: B:G, bắt đầu từ hàng 3
+ * MASTER: A:G, bắt đầu từ hàng 3
  *
- * PR LUÔN LẤY TỪ MASTER CỘT E
+ * MASTER:
+ * A = CATEGORY
+ * B = CLASS
+ * C = TASK NAME
+ * D = CONTENT
+ * E = PR
+ * F = GI
+ * G = DURING (hours)
  *
- * - Chọn từng ngày độc lập
- * - Đồng bộ theo thứ tự READY
- * - Tiến trình thực tế theo từng nhóm 3 sự kiện
- * - Chống trùng bằng SCV2_ID
- * - Cập nhật sự kiện đã tồn tại
- * - Chỉ xóa khi người dùng bật tùy chọn
- * - Không xóa lịch cá nhân
+ * V3:
+ * - Đọc MASTER một lần.
+ * - Đọc toàn bộ READY một lần.
+ * - Lấy Calendar events một lần cho khoảng thời gian chung.
+ * - Khoảng nghỉ giữa task tùy chỉnh, mặc định 15 phút.
+ * - Giờ ngủ tùy chỉnh, mặc định 02:00.
+ * - Thời lượng ngủ mặc định 5.5 giờ.
+ * - Task được phép kéo dài qua nửa đêm.
+ * - Giữ ID cũ SCV2 để nhận diện sự kiện đã đồng bộ.
+ * - Chỉ xóa sự kiện do script quản lý.
  ***************************************************************/
 
-const SCV2 = {
+
+const SCV3 = {
+
   SHEET: 'TUẦN',
 
   MASTER_ROW: 3,
@@ -24,28 +37,29 @@ const SCV2 = {
   READY_FIRST_ROW: 16,
   READY_LAST_ROW: 22,
 
-  DATE_COL: 13, // M
+  DATE_COL: 13,
 
-  TASK_FIRST_COL: 15, // O
-  TASK_LAST_COL: 37,  // AK
+  TASK_FIRST_COL: 15,
+  TASK_LAST_COL: 37,
   TASK_STEP: 2,
 
   START_HOUR: 7.5,
 
-  SLEEP_START: 2,
-  SLEEP_DURATION: 5.5,
+  DEFAULT_GAP_MINUTES: 15,
+
+  DEFAULT_SLEEP_START: '02:00',
+  DEFAULT_SLEEP_DURATION: 5.5,
+
   SLEEP_TITLE: '💤 Ngủ đêm',
 
   MARKER: '[[SCV2_ID:',
 
-  BATCH_SIZE: 3,
-
-  CACHE_SECONDS: 21600,
-
   TIMEZONE: Session.getScriptTimeZone()
+
 };
 
-const SCV2_DAYS = [
+
+const SCV3_DAYS = [
   'THỨ HAI',
   'THỨ BA',
   'THỨ TƯ',
@@ -58,66 +72,79 @@ const SCV2_DAYS = [
 
 /***************************************************************
  * 1. MỞ GIAO DIỆN
+ *
+ * Giữ tên hàm V2 để không phải đổi nút/menu cũ trong Sheet.
  ***************************************************************/
 
 function showCalendarSyncDialogV2() {
+  showCalendarSyncDialogV3();
+}
+
+
+function showCalendarSyncDialogV3() {
 
   const html = HtmlService
-    .createHtmlOutput(SCV2_getHTML_())
-    .setWidth(650)
-    .setHeight(780);
+    .createHtmlOutput(SCV3_getHTML_())
+    .setWidth(680)
+    .setHeight(850);
 
   SpreadsheetApp.getUi().showModalDialog(
     html,
-    'SMART CALENDAR SYNC V2.2'
+    'SMART CALENDAR SYNC V3'
   );
 
 }
 
 
 /***************************************************************
- * 2. LẤY DANH SÁCH NGÀY TỪ M16:M22
+ * 2. LẤY DANH SÁCH NGÀY
  ***************************************************************/
 
-function SCV2_getDaysV22() {
+function SCV3_getDays() {
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SCV2.SHEET);
+  const sheet = SpreadsheetApp
+    .getActiveSpreadsheet()
+    .getSheetByName(SCV3.SHEET);
 
   if (!sheet) {
     throw new Error('Không tìm thấy sheet TUẦN.');
   }
 
-  const values = sheet.getRange(
-    SCV2.READY_FIRST_ROW,
-    SCV2.DATE_COL,
+  const range = sheet.getRange(
+    SCV3.READY_FIRST_ROW,
+    SCV3.DATE_COL,
     7,
     1
-  ).getValues();
+  );
 
-  const displays = sheet.getRange(
-    SCV2.READY_FIRST_ROW,
-    SCV2.DATE_COL,
-    7,
-    1
-  ).getDisplayValues();
+  const values = range.getValues();
+  const displays = range.getDisplayValues();
 
   return values.map((r, i) => {
 
-    const date = SCV2_parseDate_(r[0], displays[i][0]);
+    const date = SCV3_parseDate_(
+      r[0],
+      displays[i][0]
+    );
 
     return {
+
       index: i,
+
       valid: !!date,
-      label: SCV2_DAYS[i],
+
+      label: SCV3_DAYS[i],
+
       date: date
         ? Utilities.formatDate(
             date,
-            SCV2.TIMEZONE,
+            SCV3.TIMEZONE,
             'dd/MM/yyyy'
           )
         : 'Chưa có ngày',
-      row: SCV2.READY_FIRST_ROW + i
+
+      row: SCV3.READY_FIRST_ROW + i
+
     };
 
   });
@@ -126,291 +153,406 @@ function SCV2_getDaysV22() {
 
 
 /***************************************************************
- * 3. KHỞI TẠO MỘT NGÀY
+ * 3. ĐỒNG BỘ V3 — TOÀN BỘ NGÀY ĐƯỢC CHỌN
  ***************************************************************/
 
-function SCV2_beginDayV22(dayIndex, options) {
-
-  dayIndex = Number(dayIndex);
-
-  if (
-    !Number.isInteger(dayIndex) ||
-    dayIndex < 0 ||
-    dayIndex > 6
-  ) {
-    throw new Error('Ngày được chọn không hợp lệ.');
-  }
-
-  options = options || {};
-
-  const clearOld = options.clearOld === true;
-  const createSync = options.createSync === true;
-
-  if (!clearOld && !createSync) {
-    throw new Error('Bạn chưa chọn chức năng đồng bộ.');
-  }
-
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SCV2.SHEET);
-
-  if (!sheet) {
-    throw new Error('Không tìm thấy sheet TUẦN.');
-  }
-
-  const row = SCV2.READY_FIRST_ROW + dayIndex;
-
-  const dateValue = sheet.getRange(
-    row,
-    SCV2.DATE_COL
-  ).getValue();
-
-  const dateDisplay = sheet.getRange(
-    row,
-    SCV2.DATE_COL
-  ).getDisplayValue();
-
-  const date = SCV2_parseDate_(
-    dateValue,
-    dateDisplay
-  );
-
-  if (!date) {
-    throw new Error(
-      'Ngày tại M' + row + ' không hợp lệ.'
-    );
-  }
-
-  let plan = [];
-
-  if (createSync) {
-
-    const master = SCV2_buildMasterIndex_(sheet);
-
-    plan = SCV2_buildDayPlan_(
-      sheet,
-      master,
-      dayIndex,
-      date
-    );
-
-  }
-
-  const token = Utilities.getUuid();
-
-  const desiredIds = plan.map(x => x.id);
-
-  const state = {
-    dayIndex: dayIndex,
-    dateKey: SCV2_dateKey_(date),
-
-    clearOld: clearOld,
-    createSync: createSync,
-
-    desiredIds: desiredIds,
-    plan: plan,
-
-    stats: {
-      created: 0,
-      updated: 0,
-      unchanged: 0,
-      deleted: 0,
-      skipped: 0
-    }
-  };
-
-  const json = JSON.stringify(state);
-
-  if (json.length > 95000) {
-    throw new Error(
-      'Dữ liệu đồng bộ quá lớn để lưu trạng thái.'
-    );
-  }
-
-  CacheService.getUserCache().put(
-    'SCV2_' + token,
-    json,
-    SCV2.CACHE_SECONDS
-  );
-
-  return {
-    token: token,
-    total: plan.length,
-    day: SCV2_DAYS[dayIndex],
-    date: Utilities.formatDate(
-      date,
-      SCV2.TIMEZONE,
-      'dd/MM/yyyy'
-    )
-  };
-
-}
-
-
-/***************************************************************
- * 4. XỬ LÝ TỪNG NHÓM CÔNG VIỆC
- ***************************************************************/
-
-function SCV2_processBatchV22(token, offset) {
+function SCV3_sync(options) {
 
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(10000)) {
     throw new Error(
-      'Hệ thống đang có một tiến trình đồng bộ khác. ' +
-      'Vui lòng thử lại.'
+      'Đang có một tiến trình đồng bộ khác. Vui lòng thử lại.'
     );
   }
 
   try {
 
-    const cache = CacheService.getUserCache();
+    options = options || {};
 
-    const cacheKey = 'SCV2_' + token;
+    const selectedDays = (
+      options.selectedDays || []
+    ).map(Number);
 
-    const raw = cache.get(cacheKey);
+    const clearOld = options.clearOld === true;
 
-    if (!raw) {
-      throw new Error(
-        'Phiên đồng bộ đã hết hạn. Vui lòng chạy lại.'
-      );
+    const createSync = options.createSync === true;
+
+    const gapMinutes = Number(
+      options.gapMinutes
+    );
+
+    const sleepStart = String(
+      options.sleepStart || SCV3.DEFAULT_SLEEP_START
+    );
+
+    const sleepDuration = Number(
+      options.sleepDuration
+    );
+
+    /*******************************************************
+     * VALIDATE SETTINGS
+     *******************************************************/
+
+    if (!selectedDays.length) {
+      throw new Error('Bạn chưa chọn ngày đồng bộ.');
     }
 
-    const state = JSON.parse(raw);
+    if (!clearOld && !createSync) {
+      throw new Error('Bạn chưa chọn chức năng đồng bộ.');
+    }
 
-    offset = Number(offset) || 0;
+    if (
+      !Number.isFinite(gapMinutes) ||
+      gapMinutes < 0 ||
+      gapMinutes > 1440
+    ) {
+      throw new Error('Khoảng nghỉ không hợp lệ.');
+    }
+
+    if (
+      !Number.isFinite(sleepDuration) ||
+      sleepDuration <= 0 ||
+      sleepDuration > 24
+    ) {
+      throw new Error('Thời lượng ngủ không hợp lệ.');
+    }
+
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(sleepStart)) {
+      throw new Error('Giờ bắt đầu ngủ không hợp lệ.');
+    }
+
+    const uniqueDays = [...new Set(selectedDays)];
+
+    uniqueDays.forEach(index => {
+
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index > 6
+      ) {
+        throw new Error('Ngày được chọn không hợp lệ.');
+      }
+
+    });
+
+
+    /*******************************************************
+     * ĐỌC SHEET MỘT LẦN
+     *******************************************************/
+
+    const sheet = SpreadsheetApp
+      .getActiveSpreadsheet()
+      .getSheetByName(SCV3.SHEET);
+
+    if (!sheet) {
+      throw new Error('Không tìm thấy sheet TUẦN.');
+    }
+
+    // Đọc MASTER đúng một lần.
+    const master = SCV3_buildMasterIndex_(sheet);
+
+    // Đọc toàn bộ READY DATE một lần.
+    const dateRange = sheet.getRange(
+      SCV3.READY_FIRST_ROW,
+      SCV3.DATE_COL,
+      7,
+      1
+    );
+
+    const dateValues = dateRange.getValues();
+    const dateDisplays = dateRange.getDisplayValues();
+
+    // Đọc toàn bộ READY TASK một lần.
+    const readyValues = sheet.getRange(
+      SCV3.READY_FIRST_ROW,
+      SCV3.TASK_FIRST_COL,
+      7,
+      SCV3.TASK_LAST_COL -
+        SCV3.TASK_FIRST_COL + 1
+    ).getDisplayValues();
+
+
+    /*******************************************************
+     * LẬP KẾ HOẠCH CHO TẤT CẢ NGÀY
+     *******************************************************/
+
+    const allPlans = [];
+
+    const selectedDateKeys = new Set();
+
+    const selectedDateObjects = [];
+
+    uniqueDays.sort((a, b) => a - b);
+
+    uniqueDays.forEach(dayIndex => {
+
+      const date = SCV3_parseDate_(
+        dateValues[dayIndex][0],
+        dateDisplays[dayIndex][0]
+      );
+
+      if (!date) {
+
+        throw new Error(
+          'Ngày tại M' +
+          (SCV3.READY_FIRST_ROW + dayIndex) +
+          ' không hợp lệ.'
+        );
+
+      }
+
+      const dateKey = SCV3_dateKey_(date);
+
+      selectedDateKeys.add(dateKey);
+
+      selectedDateObjects.push(date);
+
+      const plan = createSync
+        ? SCV3_buildDayPlan_(
+            master,
+            readyValues[dayIndex],
+            date,
+            gapMinutes,
+            sleepStart,
+            sleepDuration
+          )
+        : [];
+
+      allPlans.push({
+
+        dayIndex: dayIndex,
+
+        date: date,
+
+        dateKey: dateKey,
+
+        plan: plan
+
+      });
+
+    });
+
+
+    /*******************************************************
+     * TÍNH KHOẢNG THỜI GIAN CALENDAR CHUNG
+     *******************************************************/
+
+    let rangeStart = new Date(
+      Math.min.apply(
+        null,
+        selectedDateObjects.map(d => d.getTime())
+      )
+    );
+
+    rangeStart.setHours(0, 0, 0, 0);
+
+    let maxTime = rangeStart.getTime();
+
+    allPlans.forEach(day => {
+
+      day.plan.forEach(item => {
+
+        if (item.end > maxTime) {
+          maxTime = item.end;
+        }
+
+      });
+
+    });
+
+    // Thêm một ngày để bao phủ sự kiện qua nửa đêm.
+    const rangeEnd = new Date(
+      maxTime + 24 * 60 * 60 * 1000
+    );
+
+
+    /*******************************************************
+     * LẤY CALENDAR EVENTS MỘT LẦN
+     *******************************************************/
 
     const calendar = CalendarApp.getDefaultCalendar();
 
-    const date = SCV2_parseDateKey_(
-      state.dateKey
+    const existingEvents = calendar.getEvents(
+      rangeStart,
+      rangeEnd
     );
 
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
 
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
+    /*******************************************************
+     * TẠO INDEX SỰ KIỆN THEO ID
+     *******************************************************/
 
-    const plan = state.plan;
+    const eventById = new Map();
 
-    const endIndex = Math.min(
-      offset + SCV2.BATCH_SIZE,
-      plan.length
-    );
+    existingEvents.forEach(event => {
+
+      const id = SCV3_getManagedId_(event);
+
+      if (!id) return;
+
+      if (!eventById.has(id)) {
+        eventById.set(id, event);
+      }
+
+    });
+
+
+    /*******************************************************
+     * TẬP HỢP ID CẦN GIỮ
+     *******************************************************/
+
+    const desiredIds = new Set();
+
+    allPlans.forEach(day => {
+
+      day.plan.forEach(item => {
+        desiredIds.add(item.id);
+      });
+
+    });
+
+
+    /*******************************************************
+     * THỐNG KÊ
+     *******************************************************/
+
+    const stats = {
+
+      created: 0,
+
+      updated: 0,
+
+      unchanged: 0,
+
+      deleted: 0,
+
+      skipped: 0,
+
+      total: 0
+
+    };
 
     const actions = [];
 
+    allPlans.forEach(day => {
+      stats.total += day.plan.length;
+    });
+
+
     /*******************************************************
-     * TẠO / CẬP NHẬT TỪNG SỰ KIỆN
+     * TẠO / CẬP NHẬT
      *******************************************************/
 
-    for (let i = offset; i < endIndex; i++) {
+    if (createSync) {
 
-      const item = plan[i];
+      allPlans.forEach(day => {
 
-      const events = calendar.getEvents(
-        dayStart,
-        dayEnd
-      );
+        day.plan.forEach(item => {
 
-      let event = null;
+          let event = eventById.get(item.id) || null;
 
-      // Tìm sự kiện có ID chính xác.
+          // Nếu chưa tìm thấy ID V2, tìm sự kiện V1.
+          if (!event) {
 
-      for (const e of events) {
+            event = SCV3_findLegacyEvent_(
+              existingEvents,
+              item
+            );
 
-        if (
-          SCV2_getManagedId_(e) === item.id
-        ) {
-
-          event = e;
-          break;
-
-        }
-
-      }
-
-      // Nếu chưa có ID V2, tìm sự kiện V1.
-
-      if (!event) {
-
-        event = SCV2_findLegacyEvent_(
-          events,
-          item
-        );
-
-      }
-
-      if (!event) {
-
-        event = calendar.createEvent(
-          item.title,
-          new Date(item.start),
-          new Date(item.end),
-          {
-            description: item.description
           }
-        );
 
-        state.stats.created++;
+          let action = '';
 
-        actions.push({
-          action: 'CREATED',
-          title: item.title
+          if (!event) {
+
+            event = calendar.createEvent(
+              item.title,
+              new Date(item.start),
+              new Date(item.end),
+              {
+                description: item.description
+              }
+            );
+
+            stats.created++;
+
+            action = 'CREATED';
+
+          } else {
+
+            const same = (
+
+              event.getTitle() === item.title &&
+
+              (event.getDescription() || '') ===
+                item.description &&
+
+              event.getStartTime().getTime() ===
+                item.start &&
+
+              event.getEndTime().getTime() ===
+                item.end
+
+            );
+
+            if (same) {
+
+              stats.unchanged++;
+
+              action = 'UNCHANGED';
+
+            } else {
+
+              event.setTitle(item.title);
+
+              event.setTime(
+                new Date(item.start),
+                new Date(item.end)
+              );
+
+              event.setDescription(
+                item.description
+              );
+
+              stats.updated++;
+
+              action = 'UPDATED';
+
+            }
+
+          }
+
+
+          // Cập nhật màu nếu có.
+          if (item.color) {
+
+            try {
+              event.setColor(item.color);
+            } catch (e) {
+              // Không để lỗi màu làm dừng đồng bộ.
+            }
+
+          }
+
+
+          // Đưa sự kiện vừa tạo/cập nhật vào index.
+          eventById.set(item.id, event);
+
+
+          actions.push({
+
+            day: SCV3_DAYS[day.dayIndex],
+
+            action: action,
+
+            title: item.title
+
+          });
+
         });
 
-      } else {
-
-        const same =
-          event.getTitle() === item.title &&
-          (event.getDescription() || '') === item.description &&
-          event.getStartTime().getTime() ===
-            Number(item.start) &&
-          event.getEndTime().getTime() ===
-            Number(item.end);
-
-        if (same) {
-
-          state.stats.unchanged++;
-
-          actions.push({
-            action: 'UNCHANGED',
-            title: item.title
-          });
-
-        } else {
-
-          event.setTitle(item.title);
-
-          event.setTime(
-            new Date(item.start),
-            new Date(item.end)
-          );
-
-          event.setDescription(
-            item.description
-          );
-
-          state.stats.updated++;
-
-          actions.push({
-            action: 'UPDATED',
-            title: item.title
-          });
-
-        }
-
-      }
-
-      if (item.color) {
-
-        try {
-          event.setColor(item.color);
-        } catch (e) {
-          // Không để lỗi màu làm gián đoạn đồng bộ.
-        }
-
-      }
+      });
 
     }
 
@@ -418,44 +560,58 @@ function SCV2_processBatchV22(token, offset) {
     /*******************************************************
      * DỌN LỊCH CŨ
      *
-     * CHỈ THỰC HIỆN KHI clearOld = true.
-     * KHÔNG XÓA DUPLICATE KHI clearOld = false.
+     * Chỉ xóa event có marker SCV2_ID.
+     * Chỉ xử lý event bắt đầu vào ngày đã chọn.
+     * Không đụng đến lịch cá nhân.
      *******************************************************/
 
-    const finished = endIndex >= plan.length;
+    if (clearOld) {
 
-    if (finished && state.clearOld) {
+      const seenIds = new Set();
 
-      const events = calendar.getEvents(
-        dayStart,
-        dayEnd
-      );
+      existingEvents.forEach(event => {
 
-      const desired = new Set(state.desiredIds);
+        const id = SCV3_getManagedId_(event);
 
-      const seen = new Set();
-
-      events.forEach(event => {
-
-        const id = SCV2_getManagedId_(event);
-
+        // Không có marker = không phải lịch do script quản lý.
         if (!id) return;
 
-        // Chỉ thao tác với sự kiện có mã V2.
+        const eventStartKey = SCV3_dateKey_(
+          event.getStartTime()
+        );
 
-        const shouldDelete =
-          !desired.has(id) ||
-          seen.has(id);
+        // Không xử lý sự kiện bắt đầu từ ngày không được chọn.
+        if (!selectedDateKeys.has(eventStartKey)) {
+          return;
+        }
+
+        const shouldDelete = (
+
+          !desiredIds.has(id) ||
+
+          seenIds.has(id)
+
+        );
 
         if (shouldDelete) {
 
           event.deleteEvent();
 
-          state.stats.deleted++;
+          stats.deleted++;
+
+          actions.push({
+
+            day: eventStartKey,
+
+            action: 'DELETED',
+
+            title: event.getTitle()
+
+          });
 
         } else {
 
-          seen.add(id);
+          seenIds.add(id);
 
         }
 
@@ -464,29 +620,33 @@ function SCV2_processBatchV22(token, offset) {
     }
 
 
-    // Lưu tiến trình.
-
-    cache.put(
-      cacheKey,
-      JSON.stringify(state),
-      SCV2.CACHE_SECONDS
-    );
+    /*******************************************************
+     * KẾT QUẢ
+     *******************************************************/
 
     return {
 
-      offset: offset,
-      nextOffset: endIndex,
+      success: true,
 
-      processed: endIndex,
-      total: plan.length,
+      days: uniqueDays.length,
 
-      finished: finished,
+      stats: stats,
 
       actions: actions,
 
-      stats: state.stats,
+      settings: {
 
-      clearOld: state.clearOld
+        gapMinutes: gapMinutes,
+
+        sleepStart: sleepStart,
+
+        sleepDuration: sleepDuration,
+
+        clearOld: clearOld,
+
+        createSync: createSync
+
+      }
 
     };
 
@@ -500,29 +660,29 @@ function SCV2_processBatchV22(token, offset) {
 
 
 /***************************************************************
- * 5. MASTER DATABASE
+ * 4. MASTER DATABASE
  ***************************************************************/
 
-function SCV2_buildMasterIndex_(sheet) {
+function SCV3_buildMasterIndex_(sheet) {
 
   const lastRow = sheet.getLastRow();
 
-  if (lastRow < SCV2.MASTER_ROW) {
+  if (lastRow < SCV3.MASTER_ROW) {
     throw new Error('MASTER DATABASE đang trống.');
   }
 
   const count =
-    lastRow - SCV2.MASTER_ROW + 1;
+    lastRow - SCV3.MASTER_ROW + 1;
 
   const values = sheet.getRange(
-    SCV2.MASTER_ROW,
+    SCV3.MASTER_ROW,
     1,
     count,
     7
   ).getValues();
 
   const formulas = sheet.getRange(
-    SCV2.MASTER_ROW,
+    SCV3.MASTER_ROW,
     1,
     count,
     1
@@ -536,7 +696,9 @@ function SCV2_buildMasterIndex_(sheet) {
 
     const r = values[i];
 
-    const aValue = String(r[0] || '').trim();
+    const aValue = String(
+      r[0] || ''
+    ).trim();
 
     const aFormula = String(
       formulas[i][0] || ''
@@ -568,7 +730,7 @@ function SCV2_buildMasterIndex_(sheet) {
 
     if (!taskName) continue;
 
-    const key = SCV2_normalize_(taskName);
+    const key = SCV3_normalize_(taskName);
 
     if (map[key]) continue;
 
@@ -582,12 +744,12 @@ function SCV2_buildMasterIndex_(sheet) {
         r[3] || ''
       ).trim(),
 
-      // PR LUÔN LẤY CỘT E.
-      pr: SCV2_number_(r[4]),
+      // PR luôn lấy từ MASTER cột E.
+      pr: SCV3_number_(r[4]),
 
-      gi: SCV2_number_(r[5]),
+      gi: SCV3_number_(r[5]),
 
-      duration: SCV2_number_(r[6]),
+      duration: SCV3_number_(r[6]),
 
       category:
         className.toUpperCase() === 'SYSTEM'
@@ -604,44 +766,39 @@ function SCV2_buildMasterIndex_(sheet) {
 
 
 /***************************************************************
- * 6. ĐỌC READY VÀ LẬP LỊCH
+ * 5. LẬP KẾ HOẠCH MỘT NGÀY
  ***************************************************************/
 
-function SCV2_buildDayPlan_(
-  sheet,
+function SCV3_buildDayPlan_(
   master,
-  dayIndex,
-  date
+  ready,
+  date,
+  gapMinutes,
+  sleepStart,
+  sleepDuration
 ) {
-
-  const row = SCV2.READY_FIRST_ROW + dayIndex;
-
-  // Đọc toàn bộ READY một lần.
-  const ready = sheet.getRange(
-    row,
-    SCV2.TASK_FIRST_COL,
-    1,
-    SCV2.TASK_LAST_COL -
-      SCV2.TASK_FIRST_COL + 1
-  ).getDisplayValues()[0];
 
   const tasks = [];
 
   const occurrence = {};
 
+  /*******************************************************
+   * ĐỌC READY THEO THỨ TỰ O,Q,S...AK
+   *******************************************************/
+
   for (
-    let col = SCV2.TASK_FIRST_COL;
-    col <= SCV2.TASK_LAST_COL;
-    col += SCV2.TASK_STEP
+    let col = SCV3.TASK_FIRST_COL;
+    col <= SCV3.TASK_LAST_COL;
+    col += SCV3.TASK_STEP
   ) {
 
     const taskName = String(
-      ready[col - SCV2.TASK_FIRST_COL] || ''
+      ready[col - SCV3.TASK_FIRST_COL] || ''
     ).trim();
 
     if (!taskName) continue;
 
-    const key = SCV2_normalize_(taskName);
+    const key = SCV3_normalize_(taskName);
 
     const details = master[key];
 
@@ -650,14 +807,17 @@ function SCV2_buildDayPlan_(
       throw new Error(
         'KHÔNG TÌM THẤY MASTER TASK: ' +
         taskName +
-        '\nVị trí READY: ' +
-        sheet.getRange(row, col).getA1Notation() +
-        '\nKiểm tra tên tại cột C của MASTER.'
+        '\nREADY: ' +
+        SCV3_DAYS[date.getDay() === 0 ? 6 : date.getDay() - 1] +
+        '\nVui lòng kiểm tra tên tại MASTER cột C.'
       );
 
     }
 
-    if (details.duration <= 0) {
+    if (
+      !Number.isFinite(details.duration) ||
+      details.duration <= 0
+    ) {
 
       throw new Error(
         'DURING không hợp lệ: ' + taskName
@@ -688,23 +848,25 @@ function SCV2_buildDayPlan_(
    * SỰ KIỆN NGỦ ĐÊM
    *******************************************************/
 
-  const sleepStart = new Date(date);
+  const sleepParts = sleepStart
+    .split(':')
+    .map(Number);
 
-  sleepStart.setHours(
-    SCV2.SLEEP_START,
-    0,
+  const sleepDate = new Date(date);
+
+  sleepDate.setHours(
+    sleepParts[0],
+    sleepParts[1],
     0,
     0
   );
 
-  const sleepEnd = new Date(sleepStart);
-
-  sleepEnd.setMinutes(
-    sleepEnd.getMinutes() +
-    SCV2.SLEEP_DURATION * 60
+  const sleepEnd = new Date(
+    sleepDate.getTime() +
+    sleepDuration * 60 * 60 * 1000
   );
 
-  const sleepId = SCV2_makeId_(
+  const sleepId = SCV3_makeId_(
     date,
     'SLEEP',
     1
@@ -714,19 +876,23 @@ function SCV2_buildDayPlan_(
 
     id: sleepId,
 
-    title: SCV2.SLEEP_TITLE,
+    type: 'SLEEP',
+
+    name: SCV3.SLEEP_TITLE,
+
+    title: SCV3.SLEEP_TITLE,
 
     description:
-      SCV2.MARKER + sleepId + ']]\n' +
+      SCV3.MARKER + sleepId + ']]\n' +
       '🌙 NGỦ ĐÊM\n' +
       '📅 NGÀY: ' +
       Utilities.formatDate(
         date,
-        SCV2.TIMEZONE,
+        SCV3.TIMEZONE,
         'dd/MM/yyyy'
       ),
 
-    start: sleepStart.getTime(),
+    start: sleepDate.getTime(),
 
     end: sleepEnd.getTime(),
 
@@ -737,37 +903,45 @@ function SCV2_buildDayPlan_(
 
   /*******************************************************
    * CÁC TASK READY
+   *
+   * Timeline chạy liên tục.
+   * Không giới hạn 23:59.
+   * Task có thể kết thúc vào ngày hôm sau.
    *******************************************************/
 
-  let currentTime = SCV2.START_HOUR;
+  let cursor = new Date(date);
+
+  cursor.setHours(
+    Math.floor(SCV3.START_HOUR),
+    Math.round(
+      (SCV3.START_HOUR % 1) * 60
+    ),
+    0,
+    0
+  );
 
   tasks.forEach((task, index) => {
 
     const details = task.details;
 
+    // Khoảng nghỉ cố định giữa các task.
     if (index > 0) {
 
-      currentTime +=
-        details.duration <= 2
-          ? 0.25
-          : 0.5;
+      cursor = new Date(
+        cursor.getTime() +
+        gapMinutes * 60 * 1000
+      );
 
     }
 
-    const start = new Date(date);
+    const start = new Date(cursor);
 
-    start.setMinutes(
-      Math.round(currentTime * 60)
+    const end = new Date(
+      start.getTime() +
+      details.duration * 60 * 60 * 1000
     );
 
-    const end = new Date(start);
-
-    end.setMinutes(
-      end.getMinutes() +
-      Math.round(details.duration * 60)
-    );
-
-    const id = SCV2_makeId_(
+    const id = SCV3_makeId_(
       date,
       task.name,
       task.occurrence
@@ -777,7 +951,7 @@ function SCV2_buildDayPlan_(
       details.className.toUpperCase();
 
     const category =
-      details.category.toUpperCase();
+      String(details.category || '').toUpperCase();
 
     let icon = '';
 
@@ -806,7 +980,7 @@ function SCV2_buildDayPlan_(
       (icon ? icon + ' ' : '') + task.name;
 
     const description =
-      SCV2_formatDescription_(
+      SCV3_formatDescription_(
         id,
         details
       );
@@ -843,6 +1017,10 @@ function SCV2_buildDayPlan_(
 
       id: id,
 
+      type: 'TASK',
+
+      name: task.name,
+
       title: title,
 
       description: description,
@@ -855,7 +1033,8 @@ function SCV2_buildDayPlan_(
 
     });
 
-    currentTime += details.duration;
+    // Task tiếp theo bắt đầu sau khi task này kết thúc.
+    cursor = end;
 
   });
 
@@ -865,10 +1044,10 @@ function SCV2_buildDayPlan_(
 
 
 /***************************************************************
- * 7. DESCRIPTION GOOGLE CALENDAR
+ * 6. DESCRIPTION GOOGLE CALENDAR
  ***************************************************************/
 
-function SCV2_formatDescription_(id, details) {
+function SCV3_formatDescription_(id, details) {
 
   const raw = details.content || '';
 
@@ -896,7 +1075,8 @@ function SCV2_formatDescription_(id, details) {
   }
 
   return (
-    SCV2.MARKER + id + ']]\n' +
+
+    SCV3.MARKER + id + ']]\n' +
 
     '🏫 CLASS: ' + details.className + '\n' +
 
@@ -909,16 +1089,17 @@ function SCV2_formatDescription_(id, details) {
     '⚙️ GI: ' + details.gi + '\n' +
 
     '⏱️ DURING: ' + details.duration
+
   );
 
 }
 
 
 /***************************************************************
- * 8. NHẬN DIỆN ID V2
+ * 7. NHẬN DIỆN ID
  ***************************************************************/
 
-function SCV2_getManagedId_(event) {
+function SCV3_getManagedId_(event) {
 
   const description =
     event.getDescription() || '';
@@ -933,31 +1114,36 @@ function SCV2_getManagedId_(event) {
 
 
 /***************************************************************
- * 9. NHẬN DIỆN SỰ KIỆN V1
+ * 8. NHẬN DIỆN SỰ KIỆN V1
  ***************************************************************/
 
-function SCV2_findLegacyEvent_(events, desired) {
+function SCV3_findLegacyEvent_(events, desired) {
+
+  const desiredDateKey = SCV3_dateKey_(
+    new Date(desired.start)
+  );
 
   const candidates = [];
 
   events.forEach(event => {
 
-    // Không nhận diện sự kiện V2 như sự kiện V1.
-    if (SCV2_getManagedId_(event)) return;
+    // Không nhận diện sự kiện đã có ID quản lý.
+    if (SCV3_getManagedId_(event)) return;
 
     if (
-      SCV2_dateKey_(event.getStartTime()) !==
-      SCV2_dateKey_(new Date(desired.start))
-    ) return;
+      SCV3_dateKey_(event.getStartTime()) !==
+      desiredDateKey
+    ) {
+      return;
+    }
 
     const description =
       event.getDescription() || '';
 
-    if (desired.title === SCV2.SLEEP_TITLE) {
+    if (desired.type === 'SLEEP') {
 
       if (
-        event.getTitle() === SCV2.SLEEP_TITLE &&
-        description.includes('Ngủ đêm của')
+        event.getTitle() === SCV3.SLEEP_TITLE
       ) {
 
         candidates.push(event);
@@ -975,12 +1161,8 @@ function SCV2_findLegacyEvent_(events, desired) {
     if (!match) return;
 
     if (
-      SCV2_normalize_(match[1]) ===
-      SCV2_normalize_(
-        desired.description.match(
-          /📌 CÔNG VIỆC:\s*(.+)/
-        )?.[1] || ''
-      )
+      SCV3_normalize_(match[1]) ===
+      SCV3_normalize_(desired.name)
     ) {
 
       candidates.push(event);
@@ -989,18 +1171,19 @@ function SCV2_findLegacyEvent_(events, desired) {
 
   });
 
+
   if (!candidates.length) return null;
 
   candidates.sort((a, b) => {
 
     const da = Math.abs(
       a.getStartTime().getTime() -
-      Number(desired.start)
+      desired.start
     );
 
     const db = Math.abs(
       b.getStartTime().getTime() -
-      Number(desired.start)
+      desired.start
     );
 
     return da - db;
@@ -1013,14 +1196,16 @@ function SCV2_findLegacyEvent_(events, desired) {
 
 
 /***************************************************************
- * 10. TẠO ID ỔN ĐỊNH
+ * 9. TẠO ID ỔN ĐỊNH
+ *
+ * Giữ nguyên thuật toán ID V2 để không tạo trùng.
  ***************************************************************/
 
-function SCV2_makeId_(date, name, occurrence) {
+function SCV3_makeId_(date, name, occurrence) {
 
   const text =
-    SCV2_dateKey_(date) + '|' +
-    SCV2_normalize_(name) + '|' +
+    SCV3_dateKey_(date) + '|' +
+    SCV3_normalize_(name) + '|' +
     occurrence;
 
   const bytes = Utilities.computeDigest(
@@ -1042,10 +1227,10 @@ function SCV2_makeId_(date, name, occurrence) {
 
 
 /***************************************************************
- * 11. HÀM HỖ TRỢ
+ * 10. HÀM HỖ TRỢ
  ***************************************************************/
 
-function SCV2_normalize_(value) {
+function SCV3_normalize_(value) {
 
   return String(value || '')
     .normalize('NFC')
@@ -1056,7 +1241,7 @@ function SCV2_normalize_(value) {
 }
 
 
-function SCV2_number_(value) {
+function SCV3_number_(value) {
 
   if (typeof value === 'number') {
     return value;
@@ -1072,32 +1257,18 @@ function SCV2_number_(value) {
 }
 
 
-function SCV2_dateKey_(date) {
+function SCV3_dateKey_(date) {
 
   return Utilities.formatDate(
     date,
-    SCV2.TIMEZONE,
+    SCV3.TIMEZONE,
     'yyyyMMdd'
   );
 
 }
 
 
-function SCV2_parseDateKey_(key) {
-
-  const year = Number(key.substring(0, 4));
-  const month = Number(key.substring(4, 6)) - 1;
-  const day = Number(key.substring(6, 8));
-
-  const date = new Date(year, month, day);
-  date.setHours(0, 0, 0, 0);
-
-  return date;
-
-}
-
-
-function SCV2_parseDate_(value, display) {
+function SCV3_parseDate_(value, display) {
 
   if (
     value instanceof Date &&
@@ -1105,6 +1276,7 @@ function SCV2_parseDate_(value, display) {
   ) {
 
     const d = new Date(value);
+
     d.setHours(0, 0, 0, 0);
 
     return d;
@@ -1135,15 +1307,16 @@ function SCV2_parseDate_(value, display) {
 
 
 /***************************************************************
- * 12. GIAO DIỆN V2.2
+ * 11. GIAO DIỆN V3
  ***************************************************************/
 
-function SCV2_getHTML_() {
+function SCV3_getHTML_() {
 
   return `
 <!DOCTYPE html>
 <html>
 <head>
+
 <base target="_top">
 
 <style>
@@ -1163,7 +1336,7 @@ body {
 h2 {
   text-align:center;
   font-size:21px;
-  margin:5px 0 22px;
+  margin:5px 0 20px;
 }
 
 .panel {
@@ -1171,7 +1344,7 @@ h2 {
   border:1px solid #ddd;
   border-radius:13px;
   padding:17px;
-  margin-bottom:15px;
+  margin-bottom:14px;
 }
 
 .heading {
@@ -1233,6 +1406,35 @@ h2 {
   cursor:pointer;
 }
 
+.settings-grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  margin-top:15px;
+}
+
+.setting label {
+  display:block;
+  font-size:12px;
+  font-weight:bold;
+  margin-bottom:7px;
+}
+
+.setting input {
+  width:100%;
+  padding:10px;
+  border:1px solid #dadce0;
+  border-radius:8px;
+  font-size:14px;
+}
+
+.setting small {
+  display:block;
+  color:#777;
+  font-size:10px;
+  margin-top:5px;
+}
+
 button {
   border:0;
   cursor:pointer;
@@ -1274,7 +1476,7 @@ button {
 .bar {
   height:100%;
   width:0%;
-  transition:width .2s;
+  transition:width .3s;
 }
 
 .blue {
@@ -1302,7 +1504,7 @@ button {
 }
 
 #liveLog {
-  height:190px;
+  height:230px;
   overflow-y:auto;
   background:#202124;
   color:#e8eaed;
@@ -1351,11 +1553,12 @@ button {
 }
 
 </style>
+
 </head>
 
 <body>
 
-<h2>📅 SMART CALENDAR SYNC V2.2</h2>
+<h2>📅 SMART CALENDAR SYNC V3</h2>
 
 <div id="setup">
 
@@ -1371,15 +1574,79 @@ button {
     </label>
 
     <div id="days">
-      <div id="loading">Đang đọc ngày từ M16:M22...</div>
+      <div id="loading">
+        Đang đọc ngày từ M16:M22...
+      </div>
     </div>
 
   </div>
 
+
   <div class="panel">
 
     <div class="heading">
-      ⚙️ TÙY CHỌN
+      ⏱️ THIẾT LẬP THỜI GIAN
+    </div>
+
+    <div class="settings-grid">
+
+      <div class="setting">
+
+        <label>Khoảng nghỉ giữa task (phút)</label>
+
+        <input
+          type="number"
+          id="gap"
+          min="0"
+          max="1440"
+          step="1"
+          value="15"
+        >
+
+        <small>Mặc định: 15 phút</small>
+
+      </div>
+
+      <div class="setting">
+
+        <label>Giờ bắt đầu ngủ</label>
+
+        <input
+          type="time"
+          id="sleepStart"
+          value="02:00"
+        >
+
+        <small>Mặc định: 02:00</small>
+
+      </div>
+
+      <div class="setting">
+
+        <label>Thời lượng ngủ (giờ)</label>
+
+        <input
+          type="number"
+          id="sleepDuration"
+          min="0.5"
+          max="24"
+          step="0.5"
+          value="5.5"
+        >
+
+        <small>Mặc định: 5,5 giờ</small>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <div class="panel">
+
+    <div class="heading">
+      ⚙️ TÙY CHỌN ĐỒNG BỘ
     </div>
 
     <label class="option">
@@ -1393,12 +1660,13 @@ button {
     </label>
 
     <div class="note">
-      Khi bỏ chọn dọn lịch cũ, hệ thống không xóa
-      bất kỳ sự kiện nào, kể cả sự kiện trùng mã.
-      Lịch cá nhân luôn được giữ nguyên.
+      Chỉ xóa sự kiện có mã quản lý của Smart Calendar.
+      Không xóa sự kiện cá nhân.
+      Khi tắt chức năng dọn lịch cũ, hệ thống không xóa sự kiện nào.
     </div>
 
   </div>
+
 
   <button id="start" class="start" type="button" disabled>
     ĐANG TẢI DỮ LIỆU...
@@ -1412,21 +1680,7 @@ button {
   <div class="panel">
 
     <div class="heading">
-      🗑️ DỌN LỊCH CŨ
-    </div>
-
-    <div class="progress-bg">
-      <div id="bar1" class="bar blue"></div>
-    </div>
-
-    <div id="status1" class="status">
-      Chưa thực hiện.
-    </div>
-
-    <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
-
-    <div class="heading">
-      ✨ TẠO / CẬP NHẬT LỊCH
+      🚀 SMART CALENDAR SYNC V3
     </div>
 
     <div class="progress-bg">
@@ -1446,7 +1700,7 @@ button {
   <div class="panel">
 
     <div class="heading">
-      🔎 NHẬT KÝ XỬ LÝ THỰC TẾ
+      🔎 NHẬT KÝ XỬ LÝ
     </div>
 
     <div id="liveLog">
@@ -1473,23 +1727,13 @@ button {
   const $ = id => document.getElementById(id);
 
   let days = [];
-  let selected = [];
-
-  let totals = {
-    created:0,
-    updated:0,
-    unchanged:0,
-    deleted:0,
-    skipped:0,
-    total:0
-  };
 
   let running = false;
 
 
-  /********************************************************
+  /*******************************************************
    * LOG
-   ********************************************************/
+   *******************************************************/
 
   function log(message) {
 
@@ -1505,9 +1749,9 @@ button {
   }
 
 
-  /********************************************************
-   * HIỂN THỊ LỖI
-   ********************************************************/
+  /*******************************************************
+   * LỖI
+   *******************************************************/
 
   function showError(error) {
 
@@ -1530,13 +1774,11 @@ button {
   }
 
 
-  /********************************************************
-   * TẢI NGÀY M16:M22
-   ********************************************************/
+  /*******************************************************
+   * TẢI NGÀY
+   *******************************************************/
 
   function loadDays() {
-
-    log('Đang đọc ngày từ M16:M22...');
 
     google.script.run
 
@@ -1555,9 +1797,13 @@ button {
           const checkbox = document.createElement('input');
 
           checkbox.type = 'checkbox';
+
           checkbox.className = 'daycb';
+
           checkbox.value = day.index;
+
           checkbox.checked = day.valid;
+
           checkbox.disabled = !day.valid;
 
           const name = document.createElement('span');
@@ -1571,7 +1817,9 @@ button {
           date.textContent = day.date;
 
           label.appendChild(checkbox);
+
           label.appendChild(name);
+
           label.appendChild(date);
 
           $('days').appendChild(label);
@@ -1579,17 +1827,14 @@ button {
         });
 
         $('all').checked =
+          days.some(d => d.valid) &&
           days.every(d => d.valid);
 
         $('start').disabled =
           !days.some(d => d.valid);
 
         $('start').textContent =
-          'BẮT ĐẦU ĐỒNG BỘ';
-
-        log('Đã tải ' +
-          days.filter(d => d.valid).length +
-          '/7 ngày hợp lệ.');
+          'BẮT ĐẦU ĐỒNG BỘ V3';
 
         updateAllCheckbox();
 
@@ -1597,20 +1842,22 @@ button {
 
       .withFailureHandler(showError)
 
-      .SCV2_getDaysV22();
+      .SCV3_getDays();
 
   }
 
 
-  /********************************************************
-   * CHỌN TẤT CẢ / BỎ CHỌN
-   ********************************************************/
+  /*******************************************************
+   * CHỌN TẤT CẢ
+   *******************************************************/
 
   function updateAllCheckbox() {
 
-    const boxes = document.querySelectorAll('.daycb');
+    const boxes = [
+      ...document.querySelectorAll('.daycb')
+    ];
 
-    const checked = [...boxes].filter(
+    const checked = boxes.filter(
       cb => cb.checked
     ).length;
 
@@ -1648,19 +1895,19 @@ button {
   });
 
 
-  /********************************************************
+  /*******************************************************
    * BẮT ĐẦU ĐỒNG BỘ
-   ********************************************************/
+   *******************************************************/
 
   $('start').addEventListener('click', function() {
 
     if (running) return;
 
-    selected = [
+    const selectedDays = [
       ...document.querySelectorAll('.daycb:checked')
     ].map(cb => Number(cb.value));
 
-    if (!selected.length) {
+    if (!selectedDays.length) {
 
       alert('Vui lòng chọn ít nhất một ngày.');
 
@@ -1668,13 +1915,23 @@ button {
 
     }
 
+
     const options = {
+
+      selectedDays: selectedDays,
 
       clearOld: $('clear').checked,
 
-      createSync: $('create').checked
+      createSync: $('create').checked,
+
+      gapMinutes: Number($('gap').value),
+
+      sleepStart: $('sleepStart').value,
+
+      sleepDuration: Number($('sleepDuration').value)
 
     };
+
 
     if (!options.clearOld && !options.createSync) {
 
@@ -1684,14 +1941,58 @@ button {
 
     }
 
+
+    if (
+      !Number.isFinite(options.gapMinutes) ||
+      options.gapMinutes < 0 ||
+      options.gapMinutes > 1440
+    ) {
+
+      alert('Khoảng nghỉ phải từ 0 đến 1440 phút.');
+
+      return;
+
+    }
+
+
+    if (
+      !Number.isFinite(options.sleepDuration) ||
+      options.sleepDuration <= 0 ||
+      options.sleepDuration > 24
+    ) {
+
+      alert('Thời lượng ngủ phải lớn hơn 0 và không quá 24 giờ.');
+
+      return;
+
+    }
+
+
+    if (
+      !options.sleepStart ||
+      !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(options.sleepStart)
+    ) {
+
+      alert('Giờ bắt đầu ngủ không hợp lệ.');
+
+      return;
+
+    }
+
+
     if (
       options.clearOld &&
       !options.createSync &&
       !confirm(
-        'Bạn có chắc chắn muốn xóa toàn bộ sự kiện V2 ' +
-        'trong các ngày đã chọn?'
+        'Bạn có chắc chắn muốn xóa toàn bộ sự kiện ' +
+        'do Smart Calendar quản lý trong các ngày đã chọn?'
       )
-    ) return;
+    ) {
+
+      return;
+
+    }
+
 
     running = true;
 
@@ -1699,11 +2000,21 @@ button {
 
     $('progress').style.display = 'block';
 
-    $('start').disabled = true;
+    $('message').textContent =
+      'Đang đồng bộ ' + selectedDays.length + ' ngày...';
 
-    log('BẮT ĐẦU ĐỒNG BỘ.');
+    $('status2').textContent =
+      'Đang đọc dữ liệu và chuẩn bị Calendar...';
 
-    log('Số ngày được chọn: ' + selected.length);
+    log('BẮT ĐẦU SMART CALENDAR SYNC V3');
+
+    log('Số ngày được chọn: ' + selectedDays.length);
+
+    log('Khoảng nghỉ: ' + options.gapMinutes + ' phút');
+
+    log('Giờ ngủ: ' + options.sleepStart);
+
+    log('Thời lượng ngủ: ' + options.sleepDuration + ' giờ');
 
     log('Dọn lịch cũ: ' +
       (options.clearOld ? 'BẬT' : 'TẮT'));
@@ -1711,272 +2022,127 @@ button {
     log('Tạo/cập nhật: ' +
       (options.createSync ? 'BẬT' : 'TẮT'));
 
-    processDay(0, options);
+    log('Đang chạy chế độ FAST MODE...');
+
+
+    google.script.run
+
+      .withSuccessHandler(finish)
+
+      .withFailureHandler(showError)
+
+      .SCV3_sync(options);
 
   });
 
 
-  /********************************************************
-   * XỬ LÝ TỪNG NGÀY
-   ********************************************************/
-
-  function processDay(dayPosition, options) {
-
-    if (!running) return;
-
-    if (dayPosition >= selected.length) {
-
-      finish();
-
-      return;
-
-    }
-
-    const dayIndex = selected[dayPosition];
-
-    const day = days[dayIndex];
-
-    $('message').textContent =
-      'Đang khởi tạo ' +
-      day.label + ' (' +
-      day.date + ') — ' +
-      (dayPosition + 1) +
-      '/' + selected.length;
-
-    log('--------------------------------');
-
-    log('KHỞI TẠO ' +
-      day.label + ' — ' + day.date);
-
-    google.script.run
-
-      .withSuccessHandler(function(data) {
-
-        totals.total += data.total;
-
-        log('Đã lập kế hoạch: ' +
-          data.total + ' sự kiện.');
-
-        log('Bắt đầu xử lý Calendar...');
-
-        processBatch(
-          dayPosition,
-          dayIndex,
-          data.token,
-          0,
-          data.total,
-          options
-        );
-
-      })
-
-      .withFailureHandler(showError)
-
-      .SCV2_beginDayV22(
-        dayIndex,
-        options
-      );
-
-  }
-
-
-  /********************************************************
-   * XỬ LÝ THEO NHÓM 3 SỰ KIỆN
-   ********************************************************/
-
-  function processBatch(
-    dayPosition,
-    dayIndex,
-    token,
-    offset,
-    total,
-    options
-  ) {
-
-    if (!running) return;
-
-    const day = days[dayIndex];
-
-    $('message').textContent =
-      'Đang xử lý ' + day.label +
-      ' — ' + day.date +
-      '\\nĐã xử lý: ' + offset +
-      '/' + total + ' sự kiện';
-
-    google.script.run
-
-      .withSuccessHandler(function(data) {
-
-        const s = data.stats;
-
-        // Cộng số liệu của nhóm vừa xử lý.
-        // Mỗi kết quả được trả về theo từng batch.
-
-        totals.created +=
-          s.created - (totals._created || 0);
-
-        totals.updated +=
-          s.updated - (totals._updated || 0);
-
-        totals.unchanged +=
-          s.unchanged - (totals._unchanged || 0);
-
-        totals.deleted +=
-          s.deleted - (totals._deleted || 0);
-
-        totals._created = s.created;
-        totals._updated = s.updated;
-        totals._unchanged = s.unchanged;
-        totals._deleted = s.deleted;
-
-        data.actions.forEach(function(a) {
-
-          let prefix = '';
-
-          if (a.action === 'CREATED') {
-            prefix = '🆕 TẠO MỚI';
-          }
-
-          if (a.action === 'UPDATED') {
-            prefix = '🔄 CẬP NHẬT';
-          }
-
-          if (a.action === 'UNCHANGED') {
-            prefix = '⏭ GIỮ NGUYÊN';
-          }
-
-          log(prefix + ': ' + a.title);
-
-        });
-
-        const percent = total
-          ? Math.round(data.processed / total * 100)
-          : 100;
-
-        $('bar2').style.width =
-          percent + '%';
-
-        $('status2').textContent =
-          'Đã xử lý ' + data.processed +
-          '/' + total + ' sự kiện (' +
-          percent + '%)';
-
-        $('bar1').style.width =
-          options.clearOld && data.finished
-            ? '100%'
-            : '0%';
-
-        $('status1').textContent =
-          options.clearOld
-            ? (
-                data.finished
-                  ? '✅ Đã dọn lịch cũ và sự kiện trùng mã.'
-                  : 'Đang chờ hoàn thành ngày để kiểm tra lịch cũ...'
-              )
-            : 'Đã tắt chức năng xóa lịch cũ. Không xóa sự kiện nào.';
-
-        $('message').textContent =
-          'Đang xử lý ' + day.label +
-          ' (' + day.date + ')' +
-          '\\nTiến độ: ' +
-          data.processed + '/' + total;
-
-        if (data.finished) {
-
-          totals.deleted +=
-            s.deleted - (totals._deletedBefore || 0);
-
-          totals._created = 0;
-          totals._updated = 0;
-          totals._unchanged = 0;
-          totals._deleted = 0;
-
-          log('HOÀN TẤT ' + day.label);
-
-          log(
-            'Kết quả ngày: Tạo ' +
-            s.created +
-            ' | Cập nhật ' +
-            s.updated +
-            ' | Giữ nguyên ' +
-            s.unchanged +
-            ' | Xóa ' +
-            s.deleted
-          );
-
-          processDay(dayPosition + 1, options);
-
-        } else {
-
-          processBatch(
-            dayPosition,
-            dayIndex,
-            token,
-            data.nextOffset,
-            total,
-            options
-          );
-
-        }
-
-      })
-
-      .withFailureHandler(showError)
-
-      .SCV2_processBatchV22(
-        token,
-        offset
-      );
-
-  }
-
-
-  /********************************************************
-   * HOÀN TẤT
-   ********************************************************/
-
-  function finish() {
+  /*******************************************************
+   * HIỂN THỊ KẾT QUẢ
+   *******************************************************/
+
+  function finish(data) {
 
     running = false;
 
-    $('bar1').style.width = '100%';
+    const s = data.stats;
+
     $('bar2').style.width = '100%';
 
-    $('status1').textContent =
-      $('clear').checked
-        ? '✅ Hoàn tất dọn lịch cũ.'
-        : 'Đã tắt xóa lịch cũ — không xóa sự kiện.';
-
     $('status2').textContent =
-      '✅ Hoàn tất đồng bộ tất cả ngày.';
+      '✅ Hoàn tất đồng bộ.';
 
     $('message').textContent =
-      '🎉 SMART CALENDAR SYNC V2.2 HOÀN TẤT!';
+      '🎉 SMART CALENDAR SYNC V3 HOÀN TẤT!';
 
     $('result').style.display = 'block';
 
     $('result').innerHTML =
+
       '<b>📊 KẾT QUẢ ĐỒNG BỘ</b><br>' +
-      '📅 Số ngày: ' + selected.length + '<br>' +
-      '📌 Tổng sự kiện trong kế hoạch: ' +
-        totals.total + '<br>' +
-      '🆕 Tạo mới: ' + totals.created + '<br>' +
-      '🔄 Cập nhật: ' + totals.updated + '<br>' +
-      '⏭️ Không thay đổi: ' + totals.unchanged + '<br>' +
-      '🗑️ Đã xóa: ' + totals.deleted + '<br>';
+
+      '📅 Số ngày: ' + data.days + '<br>' +
+
+      '📌 Tổng sự kiện: ' + s.total + '<br>' +
+
+      '🆕 Tạo mới: ' + s.created + '<br>' +
+
+      '🔄 Cập nhật: ' + s.updated + '<br>' +
+
+      '⏭️ Không thay đổi: ' + s.unchanged + '<br>' +
+
+      '🗑️ Đã xóa: ' + s.deleted + '<br>' +
+
+      '<hr>' +
+
+      '⏱️ Khoảng nghỉ: ' +
+      data.settings.gapMinutes + ' phút<br>' +
+
+      '💤 Giờ ngủ: ' +
+      data.settings.sleepStart + '<br>' +
+
+      '🌙 Thời lượng ngủ: ' +
+      data.settings.sleepDuration + ' giờ';
+
+
+    log('--------------------------------');
+
+    log('TỔNG KẾT:');
+
+    log('Tạo mới: ' + s.created);
+
+    log('Cập nhật: ' + s.updated);
+
+    log('Không thay đổi: ' + s.unchanged);
+
+    log('Đã xóa: ' + s.deleted);
+
+
+    if (data.actions && data.actions.length) {
+
+      log('--------------------------------');
+
+      log('CHI TIẾT XỬ LÝ:');
+
+      data.actions.forEach(function(a) {
+
+        let prefix = '';
+
+        if (a.action === 'CREATED') {
+          prefix = '🆕 TẠO MỚI';
+        }
+
+        if (a.action === 'UPDATED') {
+          prefix = '🔄 CẬP NHẬT';
+        }
+
+        if (a.action === 'UNCHANGED') {
+          prefix = '⏭ GIỮ NGUYÊN';
+        }
+
+        if (a.action === 'DELETED') {
+          prefix = '🗑 XÓA';
+        }
+
+        log(
+          prefix + ': ' + a.title
+        );
+
+      });
+
+    }
 
     log('================================');
 
-    log('HOÀN TẤT TOÀN BỘ.');
+    log('HOÀN TẤT SMART CALENDAR SYNC V3.');
 
     $('close').style.display = 'block';
 
   }
 
 
-  /********************************************************
+  /*******************************************************
    * ĐÓNG
-   ********************************************************/
+   *******************************************************/
 
   $('close').addEventListener('click', function() {
 
@@ -1985,9 +2151,9 @@ button {
   });
 
 
-  /********************************************************
+  /*******************************************************
    * KHỞI CHẠY
-   ********************************************************/
+   *******************************************************/
 
   loadDays();
 
