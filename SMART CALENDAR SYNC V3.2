@@ -697,6 +697,9 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
     }
   }
 
+  // Ưu tiên xếp các task STRICT trước để task linh hoạt không chiếm mất khung giờ sinh hoạt cố định.
+  tasks.sort((a,b) => Number(b.strict)-Number(a.strict) || a.row-b.row);
+
   // Toàn bộ task chính và sự kiện ngủ là khoảng bận không thể xâm phạm.
   const occupied = (primaryPlan || [])
     .filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
