@@ -147,6 +147,7 @@ function SCV3_sync(options) {
           const event = eventById.get(item.id) || SCV3_findLegacyEvent_(existingEvents,item) || null;
           operations.push({
             kind:'SYNC',
+            phase:item.type === 'SECONDARY_TASK' ? 'SECONDARY' : 'PRIMARY',
             item:item,
             dayIndex:day.dayIndex,
             dateKey:day.dateKey,
@@ -321,7 +322,15 @@ function SCV3_processDeleteBatch_(state,token) {
  * ID do client cung cấp giúp INSERT an toàn khi phải retry sau timeout.
  */
 function SCV3_processSyncBatch_(state,token) {
-  const batch = state.operations.slice(state.cursor,state.cursor+20);
+  // Không để một HTTP batch chứa đồng thời task phụ và task chính.
+  // Nhờ vậy toàn bộ batch task phụ hoàn tất trước khi bắt đầu batch task chính.
+  const batch = [];
+  const phase = state.operations[state.cursor] ? state.operations[state.cursor].phase : null;
+  for (let i=state.cursor;i<state.operations.length && batch.length<20;i++) {
+    const operation = state.operations[i];
+    if (operation.kind !== 'SYNC' || operation.phase !== phase) break;
+    batch.push(operation);
+  }
   if (!batch.length) return null;
   const firstStart = Math.min.apply(null,batch.map(op => op.item.start));
   const lastEnd = Math.max.apply(null,batch.map(op => op.item.end));
