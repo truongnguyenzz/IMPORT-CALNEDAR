@@ -261,7 +261,13 @@ function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys)
       if (!managed || !event.id) return;
       const startValue = event.start && (event.start.dateTime || event.start.date);
       if (!startValue) return;
-      const eventDate = new Date(startValue);
+      let eventDate;
+      if (event.start.date) {
+        const parts = event.start.date.split('-').map(Number);
+        eventDate = new Date(parts[0],parts[1]-1,parts[2]);
+      } else {
+        eventDate = new Date(startValue);
+      }
       if (isNaN(eventDate.getTime())) return;
       const dateKey = SCV3_dateKey_(eventDate);
       if (!selectedDateKeys.has(dateKey)) return;
