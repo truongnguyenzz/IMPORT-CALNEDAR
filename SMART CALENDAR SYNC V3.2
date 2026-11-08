@@ -235,6 +235,65 @@ function SCV3_listCalendarRestEvents_(rangeStart,rangeEnd) {
   return events;
 }
 
+
+/**
+ * Đọc phản hồi multipart theo Content-ID, không dựa vào thứ tự ngẫu nhiên
+ * hoặc chỉ đếm các dòng HTTP trong toàn bộ response.
+ */
+function SCV3_parseBatchResponse_(responseText,boundary,idPrefix,expectedCount) {
+  const parts = String(responseText || '').split('--'+boundary);
+  const results = new Map();
+  const idPattern = new RegExp('Content-ID\\s*:\\s*<(?:(?:response)-)?'+idPrefix+'-(\\d+)>','i');
+  parts.forEach(part => {
+    const idMatch = part.match(idPattern);
+    if (!idMatch) return;
+    const statusMatch = part.match(/HTTP\\/1\\.[01]\\s+(\\d{3})/i);
+    if (!statusMatch) return;
+    const index = Number(idMatch[1]);
+    results.set(index,{
+      status:Number(statusMatch[1]),
+      response:part.trim().slice(-1200)
+    });
+  });
+  if (results.size !== expectedCount) {
+    throw new Error('Không đối chiếu được đủ Content-ID từ Google Calendar ('+results.size+'/'+expectedCount+'). Phản hồi: '+String(responseText || '').slice(0,1200));
+  }
+  for (let i=0;i<expectedCount;i++) {
+    if (!results.has(i)) throw new Error('Thiếu phản hồi Content-ID '+idPrefix+'-'+i+'.');
+  }
+  return results;
+}
+
+/** Xác minh sự kiện đã thực sự tồn tại và đúng dữ liệu sau khi ghi. */
+function SCV3_verifyWrittenEvents_(entries,rangeStart,rangeEnd) {
+  const events = SCV3_listCalendarRestEvents_(rangeStart,rangeEnd);
+  const byId = new Map();
+  events.forEach(event => {
+    if (event.id && !byId.has(event.id)) byId.set(event.id,event);
+  });
+  const failures = [];
+  entries.forEach(entry => {
+    const item = entry.op.item;
+    const expectedId = entry.event ? entry.event.id : item.id;
+    const event = byId.get(expectedId);
+    if (!event) {
+      failures.push(item.title+': không tìm thấy event.id='+expectedId);
+      return;
+    }
+    const marker = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+    const actualStart = event.start && event.start.dateTime ? new Date(event.start.dateTime).getTime() : NaN;
+    const actualEnd = event.end && event.end.dateTime ? new Date(event.end.dateTime).getTime() : NaN;
+    const valid = marker && marker[1] === item.id &&
+      String(event.summary || '') === item.title &&
+      String(event.description || '') === item.description &&
+      actualStart === item.start &&
+      actualEnd === item.end &&
+      (!entry.body.colorId || String(event.colorId || '') === entry.body.colorId);
+    if (!valid) failures.push(item.title+': event tồn tại nhưng dữ liệu không khớp (id='+expectedId+').');
+  });
+  return {success:failures.length===0,failures:failures};
+}
+
 function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys) {
   return SCV3_listCalendarRestEvents_(rangeStart,rangeEnd).filter(event => {
     const managed = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
@@ -415,47 +474,45 @@ function SCV3_processSyncBatch_(state,token) {
     if (httpStatus < 200 || httpStatus >= 300) {
       throw new Error('Batch tạo/cập nhật thất bại (HTTP '+httpStatus+'): '+responseText.slice(0,700));
     }
-    const statuses = [];
-    const regex = /HTTP\/1\.[01]\s+(\d{3})[^\r\n]*/g;
-    let match;
-    while ((match = regex.exec(responseText)) !== null) statuses.push(Number(match[1]));
-    if (statuses.length !== writes.length) {
-      throw new Error('Không đọc đủ kết quả batch tạo/cập nhật ('+statuses.length+'/'+writes.length+'). '+responseText.slice(0,700));
+    const responseByIndex = SCV3_parseBatchResponse_(responseText,boundary,'sync',writes.length);
+
+    // Chỉ chấp nhận 2xx hoặc 409 (ID đã tồn tại); các lệnh lỗi không được tính tiến độ.
+    const rejected = writes.find((entry,index) => {
+      const status = responseByIndex.get(index).status;
+      return !((status >= 200 && status < 300) || status === 409);
+    });
+    if (rejected) {
+      const rejectedIndex = writes.indexOf(rejected);
+      const result = responseByIndex.get(rejectedIndex);
+      SCV3_saveJob_(state);
+      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+        error:'Google Calendar từ chối "'+rejected.op.item.title+'" (HTTP '+result.status+'). Chi tiết: '+result.response.slice(-700),stats:state.stats};
     }
 
-    const statusByEntry = new Map();
-    writes.forEach((entry,index) => statusByEntry.set(entry,statuses[index]));
-    let completed = 0;
-    for (const entry of prepared) {
+    // Đọc lại Calendar sau mỗi batch. Không ghi nhận thành công nếu chưa thấy đủ event.
+    const verification = SCV3_verifyWrittenEvents_(writes,rangeStart,rangeEnd);
+    if (!verification.success) {
+      SCV3_saveJob_(state);
+      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+        error:'Batch đã phản hồi nhưng xác minh sau ghi thất bại. Chưa tăng bộ đếm và chưa chuyển lô. '+verification.failures.join(' | '),stats:state.stats};
+    }
+
+    // Chỉ cập nhật thống kê sau khi tất cả thao tác trong lô đã được xác minh.
+    prepared.forEach(entry => {
       if (entry.same) {
         state.stats.unchanged++;
         state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UNCHANGED',title:entry.op.item.title});
-        completed++;
-        continue;
-      }
-      const status = statusByEntry.get(entry);
-      const insertedAlready = !entry.event && status === 409;
-      if ((status >= 200 && status < 300) || insertedAlready) {
-        if (entry.event) {
-          state.stats.updated++;
-          state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UPDATED',title:entry.op.item.title});
-        } else {
-          state.stats.created++;
-          state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'CREATED',title:entry.op.item.title});
-        }
-        completed++;
+      } else if (entry.event) {
+        state.stats.updated++;
+        state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UPDATED',title:entry.op.item.title});
       } else {
-        break;
+        state.stats.created++;
+        state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'CREATED',title:entry.op.item.title});
       }
-    }
-    state.cursor += completed;
+    });
+
+    state.cursor += batch.length;
     SCV3_saveJob_(state);
-    if (completed < batch.length) {
-      const failedEntry = prepared[completed];
-      const failedStatus = failedEntry.same ? 'UNKNOWN' : statusByEntry.get(failedEntry);
-      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
-        error:'Google Calendar từ chối một thao tác tạo/cập nhật trong batch (HTTP '+failedStatus+').',stats:state.stats};
-    }
     if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
     return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
   } catch (error) {
