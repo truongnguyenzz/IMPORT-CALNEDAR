@@ -174,7 +174,7 @@ function SCV3_processBatch_(token) {
   // Tách riêng quy mô lô: xóa 20 thao tác; tạo/cập nhật 10 thao tác.
   const DELETE_OPERATIONS_PER_BATCH = 20;
   const SYNC_OPERATIONS_PER_BATCH = 10;
-  const PAUSE_BETWEEN_WRITES_MS = 800;
+  const PAUSE_BETWEEN_WRITES_MS = 500;
   const calendar = CalendarApp.getDefaultCalendar();
   let processed = 0;
   // Mỗi lượt máy chủ chỉ xử lý một loại thao tác, không trộn giới hạn hai cơ chế.
@@ -715,7 +715,7 @@ button{border:0;cursor:pointer;font-weight:bold}
     $('message').textContent = 'Đang đồng bộ... '+percent+'%';
     setTimeout(function(){
       google.script.run.withSuccessHandler(handleBatch).withFailureHandler(showError).SCV3_continueSync(data.token);
-    },800);
+    },500);
   }
   function finish(data){
     running = false;
