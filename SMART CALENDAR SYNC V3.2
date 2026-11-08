@@ -277,7 +277,7 @@ function SCV3_saveJob_(state) {
   const props = PropertiesService.getScriptProperties();
   const key = 'SCV3_JOB_'+state.token;
   const json = JSON.stringify(state);
-  const chunkSize = 7000;
+  const chunkSize = 2000;
   const count = Math.ceil(json.length/chunkSize);
   const oldCount = Number(props.getProperty(key+'_COUNT') || 0);
   for (let i=0;i<count;i++) props.setProperty(key+'_'+i,json.slice(i*chunkSize,(i+1)*chunkSize));
