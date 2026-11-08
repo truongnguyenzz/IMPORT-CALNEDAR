@@ -366,7 +366,7 @@ function SCV3_processDeleteBatch_(state,token) {
     state.cursor += completed;
     SCV3_saveJob_(state);
     if (completed < batch.length) {
-      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+      return {success:false,done:false,paused:true,retryable:false,token:token,progress:state.cursor,total:state.operations.length,
         error:'Google Calendar từ chối một lệnh trong batch (HTTP '+statuses[completed]+').',stats:state.stats};
     }
     if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
@@ -494,7 +494,7 @@ function SCV3_processSyncBatch_(state,token) {
     const verification = SCV3_verifyWrittenEvents_(writes,rangeStart,rangeEnd);
     if (!verification.success) {
       SCV3_saveJob_(state);
-      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+      return {success:false,done:false,paused:true,retryable:false,token:token,progress:state.cursor,total:state.operations.length,
         error:'Batch đã phản hồi nhưng xác minh sau ghi thất bại. Chưa tăng bộ đếm và chưa chuyển lô. '+verification.failures.join(' | '),stats:state.stats};
     }
 
@@ -1061,6 +1061,15 @@ button{border:0;cursor:pointer;font-weight:bold}
     $('bar2').style.width = percent+'%';
     $('status2').textContent = 'Đã xử lý '+progress+'/'+total+' thao tác ('+percent+'%).';
     if (data.paused){
+      if (data.retryable === false){
+        running = false;
+        $('message').textContent = '⛔ ĐÃ DỪNG ĐỂ TRÁNH BÁO THÀNH CÔNG SAI';
+        $('error').style.display = 'block';
+        $('error').textContent = data.error || 'Không xác minh được thao tác trên Google Calendar.';
+        $('close').style.display = 'block';
+        log('DỪNG AN TOÀN: '+$('error').textContent);
+        return;
+      }
       log('Google Calendar đang giới hạn thao tác. Đã lưu tiến độ '+progress+'/'+total+'. Sẽ tự thử lại sau 30 giây.');
       $('message').textContent = '⏸️ Tạm nghỉ để tránh giới hạn Google Calendar. Tiến độ đã được lưu.';
       setTimeout(function(){
