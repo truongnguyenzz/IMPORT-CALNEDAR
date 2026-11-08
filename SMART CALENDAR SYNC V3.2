@@ -477,10 +477,10 @@ function SCV3_processSyncBatch_(state,token) {
     }
     const responseByIndex = SCV3_parseBatchResponse_(responseText,boundary,'sync',writes.length);
 
-    // Chỉ chấp nhận 2xx hoặc 409 (ID đã tồn tại); các lệnh lỗi không được tính tiến độ.
+    // Chỉ chấp nhận 2xx. HTTP 409 là xung đột ID, tuyệt đối không coi là thành công.
     const rejected = writes.find((entry,index) => {
       const status = responseByIndex.get(index).status;
-      return !((status >= 200 && status < 300) || status === 409);
+      return !(status >= 200 && status < 300);
     });
     if (rejected) {
       const rejectedIndex = writes.indexOf(rejected);
@@ -830,7 +830,7 @@ function SCV3_findLegacyEvent_(events,desired) {
   return candidates[0];
 }
 function SCV3_makeId_(date,name,occurrence) {
-  const text = SCV3_dateKey_(date)+'|'+SCV3_normalize_(name)+'|'+occurrence;
+  const text = 'SCV3_ID_NAMESPACE_20261109_R1|'+SCV3_dateKey_(date)+'|'+SCV3_normalize_(name)+'|'+occurrence;
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text);
   const hash = bytes.map(b => ('0'+((b+256)%256).toString(16)).slice(-2)).join('');
   return hash.substring(0,24);
