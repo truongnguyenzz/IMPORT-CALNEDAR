@@ -293,7 +293,7 @@ function SCV3_processDeleteBatch_(state,token) {
     const response = UrlFetchApp.fetch('https://www.googleapis.com/batch/calendar/v3',{
       method:'post',
       contentType:'multipart/mixed; boundary='+boundary,
-      payload:lines.join('\\r\\n'),
+      payload:lines.join('\r\n'),
       headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},
       muteHttpExceptions:true
     });
@@ -303,7 +303,7 @@ function SCV3_processDeleteBatch_(state,token) {
       throw new Error('Batch delete thất bại (HTTP '+httpStatus+'): '+responseText.slice(0,700));
     }
     const statuses = [];
-    const regex = /HTTP\\/1\\.[01]\\s+(\\d{3})[^\\r\\n]*/g;
+    const regex = /HTTP\/1\.[01]\s+(\d{3})[^\r\n]*/g;
     let match;
     while ((match = regex.exec(responseText)) !== null) statuses.push(Number(match[1]));
     if (statuses.length !== batch.length) {
