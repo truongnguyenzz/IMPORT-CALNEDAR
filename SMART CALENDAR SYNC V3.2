@@ -769,7 +769,7 @@ function SCV3_parseSecondaryPeriod_(label) {
  */
 function SCV3_isStrictAuxiliaryTask_(taskName,details) {
   const text = (String(taskName || '')+' '+String(details.name || '')+' '+String(details.content || '')).toUpperCase();
-  return /ĂN UỐNG|ĂN SÁNG|ĂN TRƯA|ĂN TỐI|BỮA SÁNG|BỮA TRƯA|BỮA TỐI/.test(text);
+  return /ĂN UỐNG|ĂN SÁNG|ĂN TRƯA|ĂN TỐI|BỮA SÁNG|BỮA TRƯA|BỮA TỐI|VỆ SINH SÁNG|BUỔI SÁNG|BUỔI TRƯA|BUỔI CHIỀU|BUỔI TỐI/.test(text);
 }
 
 /** Tạo cửa sổ ưu tiên và tối đa hai cửa sổ liền kề cho từng task. */
