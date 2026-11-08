@@ -167,74 +167,20 @@ function SCV3_continueSync(token) {
 function SCV3_processBatch_(token) {
   const state = SCV3_loadJob_(token);
   if (!state) throw new Error('Không tìm thấy tiến trình đồng bộ hoặc tiến trình đã hết hạn. Hãy bắt đầu lại.');
-  const SYNC_OPERATIONS_PER_BATCH = 10;
-  const PAUSE_BETWEEN_WRITES_MS = 500;
   const firstOperation = state.operations[state.cursor];
   if (firstOperation && firstOperation.kind === 'DELETE') {
     return SCV3_processDeleteBatch_(state,token);
   }
-  const calendar = CalendarApp.getDefaultCalendar();
-  let processed = 0;
-  while (state.cursor < state.operations.length &&
-         processed < SYNC_OPERATIONS_PER_BATCH &&
-         state.operations[state.cursor].kind === 'SYNC') {
-    const op = state.operations[state.cursor];
-    try {
-      const item = op.item;
-      const dayStart = new Date(item.start);
-      dayStart.setHours(0,0,0,0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setDate(dayEnd.getDate()+2);
-      const events = calendar.getEvents(dayStart,dayEnd);
-      let event = null;
-      for (const candidate of events) {
-        if (SCV3_getManagedId_(candidate) === item.id) { event = candidate; break; }
-      }
-      if (!event && op.existingEventId) event = calendar.getEventById(op.existingEventId);
-      if (!event) event = SCV3_findLegacyEvent_(events,item);
-      let action = '';
-      if (!event) {
-        event = calendar.createEvent(item.title,new Date(item.start),new Date(item.end),{description:item.description});
-        state.stats.created++;
-        action = 'CREATED';
-        Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
-      } else {
-        const same = event.getTitle() === item.title &&
-          (event.getDescription() || '') === item.description &&
-          event.getStartTime().getTime() === item.start &&
-          event.getEndTime().getTime() === item.end;
-        if (same) {
-          state.stats.unchanged++;
-          action = 'UNCHANGED';
-        } else {
-          event.setTitle(item.title);
-          event.setTime(new Date(item.start),new Date(item.end));
-          event.setDescription(item.description);
-          state.stats.updated++;
-          action = 'UPDATED';
-          Utilities.sleep(PAUSE_BETWEEN_WRITES_MS);
-        }
-      }
-      if (item.color) { try { event.setColor(item.color); } catch (colorError) {} }
-      state.actions.push({day:SCV3_DAYS[op.dayIndex],action:action,title:item.title});
-      state.cursor++;
-      processed++;
-      SCV3_saveJob_(state);
-    } catch (error) {
-      SCV3_saveJob_(state);
-      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
-        error:String(error && error.message ? error.message : error),stats:state.stats};
-    }
+  if (firstOperation && firstOperation.kind === 'SYNC') {
+    return SCV3_processSyncBatch_(state,token);
   }
-  if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
-  SCV3_saveJob_(state);
-  return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
+  return SCV3_finishJob_(state,token);
 }
 /**
  * CalendarApp.getId() là iCalUID; REST batch DELETE cần event.id.
  * Vì vậy đọc danh sách qua Calendar API để lấy đúng REST ID.
  */
-function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys) {
+function SCV3_listCalendarRestEvents_(rangeStart,rangeEnd) {
   const baseUrl = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
   const params = [
     'timeMin='+encodeURIComponent(rangeStart.toISOString()),
@@ -242,7 +188,7 @@ function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys)
     'maxResults=2500',
     'singleEvents=true'
   ];
-  const operations = [];
+  const events = [];
   let pageToken = '';
   do {
     const url = baseUrl+'?'+params.join('&')+(pageToken ? '&pageToken='+encodeURIComponent(pageToken) : '');
@@ -256,26 +202,36 @@ function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys)
       throw new Error('Không thể đọc danh sách Google Calendar (HTTP '+status+'): '+response.getContentText().slice(0,500));
     }
     const data = JSON.parse(response.getContentText() || '{}');
-    (data.items || []).forEach(event => {
-      const managed = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
-      if (!managed || !event.id) return;
-      const startValue = event.start && (event.start.dateTime || event.start.date);
-      if (!startValue) return;
-      let eventDate;
-      if (event.start.date) {
-        const parts = event.start.date.split('-').map(Number);
-        eventDate = new Date(parts[0],parts[1]-1,parts[2]);
-      } else {
-        eventDate = new Date(startValue);
-      }
-      if (isNaN(eventDate.getTime())) return;
-      const dateKey = SCV3_dateKey_(eventDate);
-      if (!selectedDateKeys.has(dateKey)) return;
-      operations.push({kind:'DELETE',eventId:event.id,title:String(event.summary || ''),day:dateKey});
-    });
+    (data.items || []).forEach(event => events.push(event));
     pageToken = data.nextPageToken || '';
   } while (pageToken);
-  return operations;
+  return events;
+}
+
+function SCV3_listManagedDeleteOperations_(rangeStart,rangeEnd,selectedDateKeys) {
+  return SCV3_listCalendarRestEvents_(rangeStart,rangeEnd).filter(event => {
+    const managed = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+    if (!managed || !event.id) return false;
+    const startValue = event.start && (event.start.dateTime || event.start.date);
+    if (!startValue) return false;
+    let eventDate;
+    if (event.start.date) {
+      const parts = event.start.date.split('-').map(Number);
+      eventDate = new Date(parts[0],parts[1]-1,parts[2]);
+    } else {
+      eventDate = new Date(startValue);
+    }
+    if (isNaN(eventDate.getTime())) return false;
+    const dateKey = SCV3_dateKey_(eventDate);
+    if (!selectedDateKeys.has(dateKey)) return false;
+    event._scv3DateKey = dateKey;
+    return true;
+  }).map(event => ({
+    kind:'DELETE',
+    eventId:event.id,
+    title:String(event.summary || ''),
+    day:event._scv3DateKey
+  }));
 }
 
 /** Xóa tối đa 20 task bằng một HTTP multipart batch request. */
@@ -286,7 +242,7 @@ function SCV3_processDeleteBatch_(state,token) {
   const lines = [];
   batch.forEach((op,index) => {
     lines.push('--'+boundary,'Content-Type: application/http','Content-ID: <delete-'+index+'>','',
-      'DELETE /calendar/v3/calendars/primary/events/'+encodeURIComponent(op.eventId),'');
+      'DELETE /calendar/v3/calendars/primary/events/'+encodeURIComponent(op.eventId)+' HTTP/1.1','');
   });
   lines.push('--'+boundary+'--');
   try {
@@ -325,6 +281,145 @@ function SCV3_processDeleteBatch_(state,token) {
     if (completed < batch.length) {
       return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
         error:'Google Calendar từ chối một lệnh trong batch (HTTP '+statuses[completed]+').',stats:state.stats};
+    }
+    if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
+    return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
+  } catch (error) {
+    SCV3_saveJob_(state);
+    return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+      error:String(error && error.message ? error.message : error),stats:state.stats};
+  }
+}
+
+/**
+ * Batch INSERT/PATCH: tối đa 20 task trong một HTTP request.
+ * ID do client cung cấp giúp INSERT an toàn khi phải retry sau timeout.
+ */
+function SCV3_processSyncBatch_(state,token) {
+  const batch = state.operations.slice(state.cursor,state.cursor+20);
+  if (!batch.length) return null;
+  const firstStart = Math.min.apply(null,batch.map(op => op.item.start));
+  const lastEnd = Math.max.apply(null,batch.map(op => op.item.end));
+  const rangeStart = new Date(firstStart);
+  rangeStart.setHours(0,0,0,0);
+  const rangeEnd = new Date(lastEnd);
+  rangeEnd.setHours(0,0,0,0);
+  rangeEnd.setDate(rangeEnd.getDate()+2);
+
+  const restEvents = SCV3_listCalendarRestEvents_(rangeStart,rangeEnd);
+  const byManagedId = new Map();
+  const byICalUid = new Map();
+  restEvents.forEach(event => {
+    const marker = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+    if (marker && !byManagedId.has(marker[1])) byManagedId.set(marker[1],event);
+    if (event.iCalUID && !byICalUid.has(event.iCalUID)) byICalUid.set(event.iCalUID,event);
+  });
+
+  const prepared = batch.map(op => {
+    const item = op.item;
+    const event = byManagedId.get(item.id) || (op.existingEventId ? byICalUid.get(op.existingEventId) : null);
+    const start = new Date(item.start).toISOString();
+    const end = new Date(item.end).toISOString();
+    const body = {
+      summary:item.title,
+      description:item.description,
+      start:{dateTime:start},
+      end:{dateTime:end}
+    };
+    if (item.color) body.colorId = String(item.color);
+    const same = event &&
+      String(event.summary || '') === item.title &&
+      String(event.description || '') === item.description &&
+      new Date(event.start && event.start.dateTime || 0).getTime() === item.start &&
+      new Date(event.end && event.end.dateTime || 0).getTime() === item.end &&
+      (!body.colorId || String(event.colorId || '') === body.colorId);
+    return {op:op,event:event,body:body,same:!!same};
+  });
+
+  const writes = prepared.filter(entry => !entry.same);
+  if (!writes.length) {
+    prepared.forEach(entry => {
+      state.stats.unchanged++;
+      state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UNCHANGED',title:entry.op.item.title});
+    });
+    state.cursor += batch.length;
+    SCV3_saveJob_(state);
+    if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
+    return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
+  }
+
+  const boundary = 'scv3_sync_'+Utilities.getUuid().replace(/-/g,'');
+  const lines = [];
+  writes.forEach((entry,index) => {
+    const item = entry.op.item;
+    const isUpdate = !!entry.event;
+    const method = isUpdate ? 'PATCH' : 'POST';
+    const path = isUpdate
+      ? '/calendar/v3/calendars/primary/events/'+encodeURIComponent(entry.event.id)
+      : '/calendar/v3/calendars/primary/events';
+    const body = Object.assign({},entry.body);
+    if (!isUpdate) body.id = item.id;
+    lines.push('--'+boundary,'Content-Type: application/http','Content-ID: <sync-'+index+'>','',
+      method+' '+path+' HTTP/1.1',
+      'Content-Type: application/json',
+      '',
+      JSON.stringify(body));
+  });
+  lines.push('--'+boundary+'--');
+
+  try {
+    const response = UrlFetchApp.fetch('https://www.googleapis.com/batch/calendar/v3',{
+      method:'post',
+      contentType:'multipart/mixed; boundary='+boundary,
+      payload:lines.join('\\r\\n'),
+      headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},
+      muteHttpExceptions:true
+    });
+    const httpStatus = response.getResponseCode();
+    const responseText = response.getContentText();
+    if (httpStatus < 200 || httpStatus >= 300) {
+      throw new Error('Batch tạo/cập nhật thất bại (HTTP '+httpStatus+'): '+responseText.slice(0,700));
+    }
+    const statuses = [];
+    const regex = /HTTP\\/1\\.[01]\\s+(\\d{3})[^\\r\\n]*/g;
+    let match;
+    while ((match = regex.exec(responseText)) !== null) statuses.push(Number(match[1]));
+    if (statuses.length !== writes.length) {
+      throw new Error('Không đọc đủ kết quả batch tạo/cập nhật ('+statuses.length+'/'+writes.length+'). '+responseText.slice(0,700));
+    }
+
+    const statusByEntry = new Map();
+    writes.forEach((entry,index) => statusByEntry.set(entry,statuses[index]));
+    let completed = 0;
+    for (const entry of prepared) {
+      if (entry.same) {
+        state.stats.unchanged++;
+        state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UNCHANGED',title:entry.op.item.title});
+        completed++;
+        continue;
+      }
+      const status = statusByEntry.get(entry);
+      const insertedAlready = !entry.event && status === 409;
+      if ((status >= 200 && status < 300) || insertedAlready) {
+        if (entry.event) {
+          state.stats.updated++;
+          state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'UPDATED',title:entry.op.item.title});
+        } else {
+          state.stats.created++;
+          state.actions.push({day:SCV3_DAYS[entry.op.dayIndex],action:'CREATED',title:entry.op.item.title});
+        }
+        completed++;
+      } else {
+        break;
+      }
+    }
+    state.cursor += completed;
+    SCV3_saveJob_(state);
+    if (completed < batch.length) {
+      const failedEntry = prepared[completed];
+      const failedStatus = failedEntry.same ? 'UNKNOWN' : statusByEntry.get(failedEntry);
+      return {success:false,done:false,paused:true,token:token,progress:state.cursor,total:state.operations.length,
+        error:'Google Calendar từ chối một thao tác tạo/cập nhật trong batch (HTTP '+failedStatus+').',stats:state.stats};
     }
     if (state.cursor >= state.operations.length) return SCV3_finishJob_(state,token);
     return {success:true,done:false,paused:false,token:token,progress:state.cursor,total:state.operations.length,stats:state.stats};
@@ -737,7 +832,7 @@ button{border:0;cursor:pointer;font-weight:bold}
     log('Dọn lịch cũ: '+(options.clearOld ? 'BẬT' : 'TẮT'));
     log('Tạo/cập nhật: '+(options.createSync ? 'BẬT' : 'TẮT'));
     log('Cơ chế xóa: tối đa 20 lệnh DELETE trong một HTTP batch request.');
-    log('Cơ chế tạo/cập nhật: tối đa 10 thao tác/lượt máy chủ.');
+    log('Cơ chế tạo/cập nhật: tối đa 20 lệnh INSERT/PATCH trong một HTTP batch request.');
     if (options.clearOld) log('Xóa tất cả task và sự kiện ngủ đêm thuộc ngày đã chọn.');
     if (options.createSync){
       log('Khoảng nghỉ: '+options.gapMinutes+' phút');
