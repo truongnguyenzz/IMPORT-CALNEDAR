@@ -119,7 +119,7 @@ function SCV3_sync(options) {
         plan:SCV3_buildDayPlan_(master,readyValues[day.dayIndex],day.date,gapMinutes,sleepStart,sleepDuration)
       }));
 
-      // Task phụ được gom theo CLASS và xếp nối tiếp sau task chính cuối cùng.
+      // Smart Auxiliary Scheduler: lồng task phụ vào khung buổi ưu tiên, chỉ chuyển sang buổi liền kề khi cần.
       const primaryByDate = new Map(primaryPlans.map(day => [day.dateKey,day.plan]));
       const secondaryPlans = selectedDateInfo.map(day => {
         const daySheetName = SCV3_DAYS[day.dayIndex];
@@ -645,6 +645,14 @@ function SCV3_buildSecondaryIndex_(daySheet) {
  * Duyệt từng hàng từ trên xuống, trong mỗi hàng duyệt J/L/N/P từ trái sang phải.
  * K/M/O/Q là thời lượng phút để xếp lịch; DURING trong mô tả lấy từ cột E (giờ).
  */
+/**
+ * Smart Auxiliary Scheduler:
+ * - Khung buổi ở cột H là khung ưu tiên, không phải ranh giới cứng tuyệt đối.
+ * - Task được đọc theo đúng thứ tự hàng/cột trên bảng H4:Q16, không gom theo CLASS.
+ * - Tìm chỗ trong buổi ưu tiên trước; nếu không đủ chỗ, xét đúng một buổi liền kề.
+ * - Các task sinh hoạt ăn uống được giữ STRICT trong buổi gốc.
+ * - Không bao giờ ghi đè hoặc di chuyển task chính / giờ ngủ.
+ */
 function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
   const firstRow = SCV3.SECONDARY_FIRST_ROW;
   const rowCount = SCV3.SECONDARY_LAST_ROW-firstRow+1;
@@ -655,74 +663,162 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
     {taskOffset:6,durationOffset:7},
     {taskOffset:8,durationOffset:9}
   ];
-  const groups = new Map();
+  const tasks = [];
   const occurrence = {};
+  let currentPeriod = '';
 
-  // Đọc task theo thứ tự trên bảng lịch, gom các task cùng CLASS (cột B).
+  // H được gộp ô theo từng buổi: các hàng trống kế thừa nhãn gần nhất phía trên.
   for (let r=0;r<values.length;r++) {
+    const periodCell = String(values[r][0] || '').trim();
+    if (periodCell) currentPeriod = periodCell;
+    const period = SCV3_parseSecondaryPeriod_(currentPeriod);
     for (const slot of slots) {
       const taskName = String(values[r][slot.taskOffset] || '').trim();
       if (!taskName) continue;
       if (SCV3_normalize_(taskName) === 'NGỦ KHUYA') continue;
-
+      if (!period) {
+        throw new Error('Không xác định được BUỔI tại '+daySheet.getName()+'!H'+(firstRow+r)+' cho task "'+taskName+'".');
+      }
       const details = master[SCV3_normalize_(taskName)];
       if (!details) throw new Error('Không tìm thấy task phụ "'+taskName+'" trong bảng A1:F25 của sheet '+daySheet.getName()+'.');
       if (!Number.isFinite(details.duration) || details.duration <= 0) throw new Error('DURING ở cột E không hợp lệ cho task phụ: '+taskName+' ('+daySheet.getName()+').');
-
       const durationMinutes = SCV3_number_(values[r][slot.durationOffset]);
       if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
         throw new Error('Thời lượng phút tại '+daySheet.getName()+'!'+SCV3_columnLetter_(8+slot.durationOffset)+(firstRow+r)+' không hợp lệ cho task "'+taskName+'".');
       }
-
-      const groupKey = SCV3_normalize_(details.className || '(KHÔNG PHÂN NHÓM)');
-      if (!groups.has(groupKey)) groups.set(groupKey,[]);
-      groups.get(groupKey).push({taskName:taskName,details:details,durationMinutes:durationMinutes});
+      tasks.push({
+        taskName:taskName,
+        details:details,
+        durationMinutes:durationMinutes,
+        preferredPeriod:period,
+        row:firstRow+r,
+        strict:SCV3_isStrictAuxiliaryTask_(taskName,details)
+      });
     }
   }
 
-  // Bắt đầu sau task chính kết thúc muộn nhất; bỏ qua sự kiện ngủ đêm.
-  let cursorTime = null;
-  (primaryPlan || []).forEach(item => {
-    if (item.type === 'TASK' && (cursorTime === null || item.end > cursorTime)) cursorTime = item.end;
-  });
-  if (cursorTime === null) {
-    const fallback = new Date(date);
-    fallback.setHours(Math.floor(SCV3.START_HOUR),Math.round((SCV3.START_HOUR%1)*60),0,0);
-    cursorTime = fallback.getTime();
-  }
+  // Toàn bộ task chính và sự kiện ngủ là khoảng bận không thể xâm phạm.
+  const occupied = (primaryPlan || [])
+    .filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
+    .map(item => ({start:item.start,end:item.end,title:item.title || item.name || 'TASK CHÍNH'}));
 
   const plan = [];
-  let groupIndex = 0;
-  for (const tasks of groups.values()) {
-    // Chỉ nghỉ 15 phút khi chuyển sang nhóm CLASS tiếp theo.
-    if (groupIndex > 0) cursorTime += 15*60*1000;
-
-    for (const task of tasks) {
-      const start = cursorTime;
-      const end = start + task.durationMinutes*60*1000;
-      const key = SCV3_normalize_(task.taskName);
-      occurrence[key] = (occurrence[key] || 0)+1;
-      const id = SCV3_makeId_(date,'SECONDARY|'+task.taskName,occurrence[key]);
-      const description = SCV3.MARKER+id+']]'+
-        '\n🏫 CLASS: '+task.details.className+
-        '\n📌 CÔNG VIỆC: '+task.details.name+
-        '\n📝 NỘI DUNG: '+task.details.content+
-        '\n⏱️ DURING: '+task.details.duration;
-      plan.push({
-        id:id,
-        type:'SECONDARY_TASK',
-        name:task.details.name,
-        title:task.details.name,
-        description:description,
-        start:start,
-        end:end,
-        color:SCV3.SECONDARY_COLOR
-      });
-      cursorTime = end;
+  for (const task of tasks) {
+    const windows = SCV3_getSecondaryCandidateWindows_(date,task.preferredPeriod,task.strict);
+    const slot = SCV3_findSecondarySlot_(windows,occupied,task.durationMinutes*60000);
+    if (!slot) {
+      const flexibility = task.strict ? 'STRICT — không được chuyển buổi' : 'ADJACENT — chỉ được chuyển sang buổi liền kề';
+      throw new Error(
+        'SMART AUXILIARY SCHEDULER không tìm được khoảng trống hợp lệ cho "'+task.taskName+
+        '" ('+daySheet.getName()+', dòng '+task.row+'). Buổi ưu tiên: '+task.preferredPeriod.label+
+        '. Quy tắc: '+flexibility+'. Task chính và giờ ngủ được giữ nguyên; không tự ý dồn task xuống cuối ngày. '+
+        'Hãy kiểm tra lại thời lượng hoặc bố cục task của ngày này.'
+      );
     }
-    groupIndex++;
+
+    const key = SCV3_normalize_(task.taskName);
+    occurrence[key] = (occurrence[key] || 0)+1;
+    const id = SCV3_makeId_(date,'SECONDARY|'+task.taskName,occurrence[key]);
+    const description = SCV3.MARKER+id+']]'+
+      '\n🏫 CLASS: '+task.details.className+
+      '\n📌 CÔNG VIỆC: '+task.details.name+
+      '\n📝 NỘI DUNG: '+task.details.content+
+      '\n⏱️ DURING: '+task.details.duration+
+      '\n🗓️ KHUNG ƯU TIÊN: '+task.preferredPeriod.label+
+      '\n⚙️ PHÂN BỔ: '+(slot.periodIndex === task.preferredPeriod.index ? 'ĐÚNG BUỔI ƯU TIÊN' : 'CHUYỂN SANG BUỔI LIỀN KỀ');
+    const item = {
+      id:id,
+      type:'SECONDARY_TASK',
+      name:task.details.name,
+      title:task.details.name,
+      description:description,
+      start:slot.start,
+      end:slot.start+task.durationMinutes*60000,
+      color:SCV3.SECONDARY_COLOR
+    };
+    plan.push(item);
+    occupied.push({start:item.start,end:item.end,title:item.title});
   }
+  // Giữ lịch đầu ra theo thời gian thực tế, không theo CLASS.
+  plan.sort((a,b) => a.start-b.start);
   return plan;
+}
+
+/** Nhận diện tên buổi từ ô H, kể cả khi ô chứa thêm ghi chú giờ. */
+function SCV3_parseSecondaryPeriod_(label) {
+  const text = String(label || '').toUpperCase();
+  const periods = [
+    {index:0,key:'MORNING',label:'SÁNG',startHour:6,endHour:12},
+    {index:1,key:'NOON',label:'TRƯA',startHour:12,endHour:15},
+    {index:2,key:'AFTERNOON',label:'CHIỀU',startHour:15,endHour:17},
+    {index:3,key:'EVENING',label:'TỐI',startHour:17,endHour:23}
+  ];
+  if (text.includes('SÁNG') || text.includes('SANG')) return periods[0];
+  if (text.includes('TRƯA') || text.includes('TRUA')) return periods[1];
+  if (text.includes('CHIỀU') || text.includes('CHIEU')) return periods[2];
+  if (text.includes('TỐI') || text.includes('TOI')) return periods[3];
+  return null;
+}
+
+/**
+ * Task ăn uống có nội dung nhận diện rõ là giờ ăn được giữ STRICT.
+ * Các task phụ còn lại mặc định ADJACENT: chỉ xét buổi ngay trước/sau.
+ */
+function SCV3_isStrictAuxiliaryTask_(taskName,details) {
+  const text = (String(taskName || '')+' '+String(details.name || '')+' '+String(details.content || '')).toUpperCase();
+  return /ĂN UỐNG|ĂN SÁNG|ĂN TRƯA|ĂN TỐI|BỮA SÁNG|BỮA TRƯA|BỮA TỐI/.test(text);
+}
+
+/** Tạo cửa sổ ưu tiên và tối đa hai cửa sổ liền kề cho từng task. */
+function SCV3_getSecondaryCandidateWindows_(date,preferred,strict) {
+  const periods = [
+    {index:0,label:'SÁNG',startHour:6,endHour:12},
+    {index:1,label:'TRƯA',startHour:12,endHour:15},
+    {index:2,label:'CHIỀU',startHour:15,endHour:17},
+    {index:3,label:'TỐI',startHour:17,endHour:23}
+  ];
+  const indices = [preferred.index];
+  if (!strict) {
+    const adjacent = [preferred.index-1,preferred.index+1]
+      .filter(index => index >= 0 && index < periods.length)
+      .sort((a,b) => {
+        const center = (preferred.startHour+preferred.endHour)/2;
+        const ca = (periods[a].startHour+periods[a].endHour)/2;
+        const cb = (periods[b].startHour+periods[b].endHour)/2;
+        return Math.abs(ca-center)-Math.abs(cb-center);
+      });
+    adjacent.forEach(index => indices.push(index));
+  }
+  return indices.map(index => {
+    const period = periods[index];
+    const start = new Date(date);
+    start.setHours(period.startHour,0,0,0);
+    const end = new Date(date);
+    end.setHours(period.endHour,0,0,0);
+    return {periodIndex:index,start:start.getTime(),end:end.getTime()};
+  });
+}
+
+/** Tìm khoảng trống liên tục sớm nhất, không giao với bất kỳ task nào đã có. */
+function SCV3_findSecondarySlot_(windows,occupied,durationMs) {
+  for (const window of windows) {
+    const busy = occupied
+      .filter(item => item.end > window.start && item.start < window.end)
+      .map(item => ({start:Math.max(item.start,window.start),end:Math.min(item.end,window.end)}))
+      .sort((a,b) => a.start-b.start);
+    let cursor = window.start;
+    for (const interval of busy) {
+      if (interval.start-cursor >= durationMs) {
+        return {start:cursor,periodIndex:window.periodIndex};
+      }
+      if (interval.end > cursor) cursor = interval.end;
+      if (cursor >= window.end) break;
+    }
+    if (window.end-cursor >= durationMs) {
+      return {start:cursor,periodIndex:window.periodIndex};
+    }
+  }
+  return null;
 }
 function SCV3_columnLetter_(column) {
   let n = column, result = '';
