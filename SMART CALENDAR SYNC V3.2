@@ -247,7 +247,7 @@ function SCV3_parseBatchResponse_(responseText,boundary,idPrefix,expectedCount) 
   parts.forEach(part => {
     const idMatch = part.match(idPattern);
     if (!idMatch) return;
-    const statusMatch = part.match(/HTTP\\/1\\.[01]\\s+(\\d{3})/i);
+    const statusMatch = part.match(/HTTP\/1\.[01]\s+(\d{3})/i);
     if (!statusMatch) return;
     const index = Number(idMatch[1]);
     results.set(index,{
@@ -280,7 +280,7 @@ function SCV3_verifyWrittenEvents_(entries,rangeStart,rangeEnd) {
       failures.push(item.title+': không tìm thấy event.id='+expectedId);
       return;
     }
-    const marker = String(event.description || '').match(/\\[\\[SCV2_ID:([^\\]]+)\\]\\]/);
+    const marker = String(event.description || '').match(/\[\[SCV2_ID:([^\]]+)\]\]/);
     const actualStart = event.start && event.start.dateTime ? new Date(event.start.dateTime).getTime() : NaN;
     const actualEnd = event.end && event.end.dateTime ? new Date(event.end.dateTime).getTime() : NaN;
     const valid = marker && marker[1] === item.id &&
