@@ -734,7 +734,7 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
       // Nếu khoảng dự kiến vướng task chính/giờ ngủ, đặt task phụ sau
       // task đang chắn; tiếp tục dò cho đến khi tìm được đoạn không chồng lấn.
       let blocker;
-      while ((blocker = primary.find(item => item.end > cursor && item.start < cursor+duration))) {
+      while ((blocker = primary.concat(secondaryPlan).find(item => item.end > cursor && item.start < cursor+duration))) {
         cursor = blocker.end;
       }
 
