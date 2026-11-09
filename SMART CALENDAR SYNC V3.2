@@ -681,8 +681,6 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
   const periodTasks = [[],[],[],[]];
   const occurrence = {};
   let currentPeriod = '';
-
-  // Cột H có ô gộp theo buổi nên phải kế thừa nhãn từ hàng phía trên.
   for (let r=0;r<values.length;r++) {
     const label = String(values[r][0] || '').trim();
     if (label) currentPeriod = label;
@@ -699,78 +697,81 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
         throw new Error('Thời lượng phút tại '+daySheet.getName()+'!'+SCV3_columnLetter_(8+slot.durationOffset)+(firstRow+r)+' không hợp lệ cho task "'+taskName+'".');
       }
       periodTasks[period.index].push({
-        taskName:taskName,
-        details:details,
-        durationMinutes:minutes,
-        row:firstRow+r
+        taskName:taskName,details:details,durationMinutes:minutes,row:firstRow+r,
+        group:String(values[r][1] || '').trim()
       });
     }
   }
 
   const primary = (primaryPlan || []).filter(item =>
     (item.type === 'TASK' || item.type === 'SLEEP') && Number.isFinite(item.start) && Number.isFinite(item.end)
-  ).sort((a,b) => a.start-b.start);
-  const sleep = primary.filter(item => item.type === 'SLEEP');
-  const sleepEnd = sleep.length ? Math.max.apply(null,sleep.map(item => item.end)) : new Date(date).setHours(0,0,0,0);
-  const boundaries = [sleepEnd,12,15,17].map((value,index) => {
-    if (index === 0) return value;
-    const d = new Date(date);
-    d.setHours(value,0,0,0);
-    return d.getTime();
+  );
+  const dayStart = new Date(date); dayStart.setHours(0,0,0,0);
+  const dayEnd = new Date(date); dayEnd.setHours(24,0,0,0);
+  const boundaries = [0,12,15,17,24].map(hour => {
+    const d = new Date(date); d.setHours(hour,0,0,0); return d.getTime();
   });
+  boundaries[0] = Math.max(boundaries[0], ...primary.filter(x=>x.type==='SLEEP').map(x=>x.end), dayStart.getTime());
   const labels = ['SÁNG','TRƯA','CHIỀU','TỐI'];
   const secondaryPlan = [];
+  let previousGroup = null;
+  let previousGroupEnd = null;
 
+  // Giai đoạn 3: mỗi task phụ tìm một khoảng trống đủ dài trong buổi của nó
+  // hoặc các buổi sau; không chèn đè task chính và không bỏ task vì thiếu chỗ.
   for (let p=0;p<periodTasks.length;p++) {
-    const queue = periodTasks[p];
-    if (!queue.length) continue;
-    let cursor = boundaries[p];
-
-    for (let i=0;i<queue.length;i++) {
-      const task = queue[i];
+    for (const task of periodTasks[p]) {
       const duration = task.durationMinutes*60000;
+      const group = task.group || ('__ROW_'+task.row);
+      const groupBreak = previousGroup !== null && group !== previousGroup ? 15*60000 : 0;
+      let earliest = previousGroupEnd === null ? boundaries[p] : previousGroupEnd+groupBreak;
+      let placed = null;
 
-      // Giữ nguyên tuyệt đối giờ Start Time của task chính.
-      // Nếu khoảng dự kiến vướng task chính/giờ ngủ, đặt task phụ sau
-      // task đang chắn; tiếp tục dò cho đến khi tìm được đoạn không chồng lấn.
-      let blocker;
-      while ((blocker = primary.concat(secondaryPlan).find(item => item.end > cursor && item.start < cursor+duration))) {
-        cursor = blocker.end;
+      for (let targetPeriod=p;targetPeriod<4 && !placed;targetPeriod++) {
+        let candidate = Math.max(earliest,boundaries[targetPeriod]);
+        const windowEnd = boundaries[targetPeriod+1];
+        const occupied = primary.concat(secondaryPlan).slice().sort((a,b)=>a.start-b.start);
+        for (const event of occupied) {
+          if (event.end <= candidate) continue;
+          if (event.start >= windowEnd) break;
+          if (candidate+duration <= Math.min(event.start,windowEnd)) {
+            placed = candidate;
+            break;
+          }
+          candidate = Math.max(candidate,event.end);
+          if (candidate >= windowEnd) break;
+        }
+        if (!placed && candidate+duration <= windowEnd) placed = candidate;
       }
 
-      const start = cursor;
+      if (placed === null) {
+        const occupied = primary.concat(secondaryPlan);
+        const lastEnd = occupied.length ? Math.max.apply(null,occupied.map(x=>x.end)) : boundaries[p];
+        placed = Math.max(earliest,lastEnd);
+      }
+
+      const start = placed;
       const end = start+duration;
       const key = SCV3_normalize_(task.taskName);
       occurrence[key] = (occurrence[key] || 0)+1;
       const id = SCV3_makeId_(date,'SECONDARY|'+task.taskName,occurrence[key]);
       const description = SCV3.MARKER+id+']]'+
-        '\\n🏫 CLASS: '+task.details.className+
-        '\\n📌 CÔNG VIỆC: '+task.details.name+
-        '\\n📝 NỘI DUNG: '+task.details.content+
-        '\\n⏱️ DURING: '+task.details.duration+
-        '\\n🗓️ BUỔI: '+labels[p]+
-        '\\n⚙️ PHÂN BỔ: CHÈN VÀO KHOẢNG TRỐNG, KHÔNG DỊCH START TIME TASK CHÍNH';
+        '\n🏫 CLASS: '+task.details.className+
+        '\n📌 CÔNG VIỆC: '+task.details.name+
+        '\n📝 NỘI DUNG: '+task.details.content+
+        '\n⏱️ DURING: '+task.details.duration+
+        '\n🗓️ BUỔI: '+labels[Math.min(p,3)]+
+        '\n⚙️ PHÂN BỔ: TẬN DỤNG KHOẢNG TRỐNG, KHÔNG CHỒNG LẤN TASK CHÍNH';
       secondaryPlan.push({
-        id:id,
-        type:'SECONDARY_TASK',
-        name:task.details.name,
-        title:task.details.name,
-        description:description,
-        start:start,
-        end:end,
-        color:SCV3.SECONDARY_COLOR
+        id:id,type:'SECONDARY_TASK',name:task.details.name,title:task.details.name,
+        description:description,start:start,end:end,color:SCV3.SECONDARY_COLOR
       });
-      cursor = end;
+      previousGroup = group;
+      previousGroupEnd = end;
     }
   }
 
-  // Task chính được giữ nguyên Start Time và thời lượng.
-  const updatedPrimary = (primaryPlan || []).map(item => {
-    if (item.type !== 'TASK') return item;
-    const changed = primary.find(task => task.id === item.id);
-    return changed || item;
-  });
-  return {primaryPlan:updatedPrimary,secondaryPlan:secondaryPlan};
+  return {primaryPlan:primaryPlan || [],secondaryPlan:secondaryPlan};
 }
 
 function SCV3_parseSecondaryPeriod_(label) {
@@ -810,6 +811,7 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     occurrence[key] = (occurrence[key] || 0)+1;
     tasks.push({name:taskName,details:details,occurrence:occurrence[key]});
   }
+
   const plan = [];
   const sleepParts = sleepStart.split(':').map(Number);
   const sleepDate = new Date(date);
@@ -817,40 +819,62 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
   const sleepEnd = new Date(sleepDate.getTime()+sleepDuration*60*60*1000);
   const sleepId = SCV3_makeId_(date,'SLEEP',1);
   plan.push({
-    id:sleepId,
-    type:'SLEEP',
-    name:SCV3.SLEEP_TITLE,
-    title:SCV3.SLEEP_TITLE,
+    id:sleepId,type:'SLEEP',name:SCV3.SLEEP_TITLE,title:SCV3.SLEEP_TITLE,
     description:SCV3.MARKER+sleepId+']]\n🌙 NGỦ ĐÊM\n📅 NGÀY: '+Utilities.formatDate(date,SCV3.TIMEZONE,'dd/MM/yyyy'),
-    start:sleepDate.getTime(),
-    end:sleepEnd.getTime(),
-    color:CalendarApp.EventColor.GRAY
+    start:sleepDate.getTime(),end:sleepEnd.getTime(),color:CalendarApp.EventColor.GRAY
   });
 
   const dayStart = new Date(date);
   dayStart.setHours(Math.floor(SCV3.START_HOUR),Math.round((SCV3.START_HOUR%1)*60),0,0);
-  let cursor = dayStart.getTime();
-  let previousTaskEnd = null;
+  const dayStartMs = dayStart.getTime();
 
-  tasks.forEach((task,index) => {
-    const details = task.details;
-    let start;
-    if (details.startTimeMinutes !== null && details.startTimeMinutes !== undefined) {
-      const fixed = new Date(date);
-      fixed.setHours(Math.floor(details.startTimeMinutes/60),details.startTimeMinutes%60,0,0);
-      start = fixed.getTime();
-    } else {
-      start = index === 0 ? cursor : Math.max(cursor,previousTaskEnd+gapMinutes*60000);
-    }
-
-    const end = start+details.duration*60*60*1000;
+  // Giai đoạn 1: đặt tất cả task có Start Time làm các mốc neo bất di bất dịch.
+  const fixedTasks = tasks.filter(task => task.details.startTimeMinutes !== null && task.details.startTimeMinutes !== undefined);
+  const flexibleTasks = tasks.filter(task => task.details.startTimeMinutes === null || task.details.startTimeMinutes === undefined);
+  const anchors = fixedTasks.map(task => {
+    const fixed = new Date(date);
+    fixed.setHours(Math.floor(task.details.startTimeMinutes/60),task.details.startTimeMinutes%60,0,0);
+    const start = fixed.getTime();
+    const end = start+task.details.duration*60*60*1000;
     if (start < sleepEnd.getTime() && end > sleepDate.getTime()) {
-      throw new Error('XUNG ĐỘT GIỜ NGỦ: task "'+task.name+'" ('+Utilities.formatDate(new Date(start),SCV3.TIMEZONE,'HH:mm')+'–'+Utilities.formatDate(new Date(end),SCV3.TIMEZONE,'HH:mm')+') trùng với giờ ngủ '+sleepStart+'. Start Time cột I là cố định; vui lòng điều chỉnh dữ liệu.');
+      throw new Error('XUNG ĐỘT GIỜ NGỦ: task "'+task.name+'" có Start Time '+Utilities.formatDate(fixed,SCV3.TIMEZONE,'HH:mm')+' trùng giờ ngủ.');
     }
-    if (previousTaskEnd !== null && start < previousTaskEnd) {
-      throw new Error('XUNG ĐỘT START TIME: task "'+task.name+'" bắt đầu '+Utilities.formatDate(new Date(start),SCV3.TIMEZONE,'HH:mm')+' nhưng task chính trước kết thúc '+Utilities.formatDate(new Date(previousTaskEnd),SCV3.TIMEZONE,'HH:mm')+'. Start Time cột I là cố định nên hệ thống không tự dịch chuyển task.');
-    }
+    return {task:task,start:start,end:end};
+  }).sort((a,b) => a.start-b.start);
 
+  for (let i=1;i<anchors.length;i++) {
+    if (anchors[i].start < anchors[i-1].end) {
+      throw new Error('XUNG ĐỘT START TIME: "'+anchors[i-1].task.name+'" và "'+anchors[i].task.name+'" chồng lấn. Các Start Time cố định không được tự dịch chuyển.');
+    }
+  }
+
+  // Giai đoạn 2: task chính không có Start Time lần lượt lấp các khoảng trống.
+  // Nếu task không vừa trước mốc neo kế tiếp, chuyển task đó xuống sau mốc neo.
+  const placedFlexible = [];
+  let cursor = dayStartMs;
+  flexibleTasks.forEach(task => {
+    const duration = task.details.duration*60*60*1000;
+    let start = cursor;
+    for (const anchor of anchors) {
+      if (anchor.end <= start) continue;
+      if (start+duration <= anchor.start) break;
+      start = Math.max(start,anchor.end)+gapMinutes*60000;
+    }
+    // Không để task không cố định chồng lấn với bất kỳ mốc neo nào.
+    let collision;
+    while ((collision = anchors.find(anchor => anchor.end > start && anchor.start < start+duration))) {
+      start = collision.end+gapMinutes*60000;
+    }
+    const end = start+duration;
+    placedFlexible.push({task:task,start:start,end:end});
+    cursor = end+gapMinutes*60000;
+  });
+
+  // Tạo event cho task chính; thứ tự READY vẫn được giữ bằng ID và nội dung.
+  const allPrimary = anchors.concat(placedFlexible);
+  allPrimary.forEach(entry => {
+    const task = entry.task;
+    const details = task.details;
     const id = SCV3_makeId_(date,task.name,task.occurrence);
     const classUpper = details.className.toUpperCase();
     const category = String(details.category || '').toUpperCase();
@@ -867,18 +891,11 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     else if (classUpper === 'KNOWLEDGES' || classUpper === 'CASUAL SKILLS' || classUpper === 'NỘI TẠI') color = CalendarApp.EventColor.GREEN;
     else if (classUpper === 'DƯỠNG SINH' || classUpper === 'SIÊU SINH' || classUpper === 'TRƯỜNG SINH') color = CalendarApp.EventColor.YELLOW;
     plan.push({
-      id:id,
-      type:'TASK',
-      name:task.name,
-      title:title,
-      description:description,
-      start:start,
-      end:end,
+      id:id,type:'TASK',name:task.name,title:title,description:description,
+      start:entry.start,end:entry.end,
       fixedStart:details.startTimeMinutes !== null && details.startTimeMinutes !== undefined,
       color:color
     });
-    previousTaskEnd = end;
-    cursor = end;
   });
   return plan;
 }
