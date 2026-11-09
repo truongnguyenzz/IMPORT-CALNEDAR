@@ -806,7 +806,7 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     if (!taskName) continue;
     const key = SCV3_normalize_(taskName);
     const details = master[key];
-    if (!details) throw new Error('KHÔNG TÌM THẤY MASTER TASK: '+taskName+'\\nREADY: '+SCV3_DAYS[date.getDay() === 0 ? 6 : date.getDay()-1]+'\\nVui lòng kiểm tra tên tại MASTER cột C.');
+    if (!details) throw new Error('KHÔNG TÌM THẤY MASTER TASK: '+taskName+'\nREADY: '+SCV3_DAYS[date.getDay() === 0 ? 6 : date.getDay()-1]+'\nVui lòng kiểm tra tên tại MASTER cột C.');
     if (!Number.isFinite(details.duration) || details.duration <= 0) throw new Error('DURING không hợp lệ: '+taskName);
     occurrence[key] = (occurrence[key] || 0)+1;
     tasks.push({name:taskName,details:details,occurrence:occurrence[key]});
@@ -822,7 +822,7 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     type:'SLEEP',
     name:SCV3.SLEEP_TITLE,
     title:SCV3.SLEEP_TITLE,
-    description:SCV3.MARKER+sleepId+']]\\n🌙 NGỦ ĐÊM\\n📅 NGÀY: '+Utilities.formatDate(date,SCV3.TIMEZONE,'dd/MM/yyyy'),
+    description:SCV3.MARKER+sleepId+']]\n🌙 NGỦ ĐÊM\n📅 NGÀY: '+Utilities.formatDate(date,SCV3.TIMEZONE,'dd/MM/yyyy'),
     start:sleepDate.getTime(),
     end:sleepEnd.getTime(),
     color:CalendarApp.EventColor.GRAY
@@ -937,7 +937,7 @@ function SCV3_parseTimeOfDay_(value,display) {
   }
   const raw = String(display || value).trim();
   if (!raw) return null;
-  const match = raw.match(/^(\\d{1,2}):(\\d{2})(?::\\d{2})?\\s*(AM|PM)?$/i);
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?$/i);
   if (!match) throw new Error('START TIME không hợp lệ: "'+raw+'". Định dạng yêu cầu HH:mm, ví dụ 07:30.');
   let hour=Number(match[1]), minute=Number(match[2]);
   if (minute>59 || hour>23) throw new Error('START TIME ngoài phạm vi 00:00–23:59: '+raw);
