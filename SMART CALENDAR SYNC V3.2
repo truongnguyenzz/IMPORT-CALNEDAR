@@ -764,7 +764,6 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
     }
   }
 
-  const updatedPrimary = primaryPlan || [];
   // Task chính được giữ nguyên Start Time và thời lượng.
   const updatedPrimary = (primaryPlan || []).map(item => {
     if (item.type !== 'TASK') return item;
