@@ -4,7 +4,7 @@
  * SHEET: TUẦN
  * READY DATE: M16:M22
  * READY TASK: O,Q,S,U,W,Y,AA,AC,AE,AG,AI,AK
- * MASTER: A:G, bắt đầu từ hàng 3
+ * MASTER: A:I, bắt đầu từ hàng 3 (I = Start Time cố định)
  * CLEANUP: Xóa tất cả sự kiện có SCV2_ID thuộc ngày được chọn.
  * CLEANUP KHÔNG phụ thuộc MASTER, READY TASK hoặc thiết lập thời gian.
  ***************************************************************/
@@ -589,7 +589,8 @@ function SCV3_buildMasterIndex_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < SCV3.MASTER_ROW) throw new Error('MASTER DATABASE đang trống.');
   const count = lastRow-SCV3.MASTER_ROW+1;
-  const values = sheet.getRange(SCV3.MASTER_ROW,1,count,7).getValues();
+  const values = sheet.getRange(SCV3.MASTER_ROW,1,count,9).getValues();
+  const displays = sheet.getRange(SCV3.MASTER_ROW,1,count,9).getDisplayValues();
   const formulas = sheet.getRange(SCV3.MASTER_ROW,1,count,1).getFormulas();
   const map = {};
   let currentCategory = '';
@@ -612,6 +613,7 @@ function SCV3_buildMasterIndex_(sheet) {
       pr:SCV3_number_(r[4]),
       gi:SCV3_number_(r[5]),
       duration:SCV3_number_(r[6]),
+      startTimeMinutes:SCV3_parseTimeOfDay_(r[8],displays[i][8]),
       category:className.toUpperCase() === 'SYSTEM' ? 'SYSTEM' : currentCategory
     };
   }
@@ -706,9 +708,9 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
   }
 
   const primary = (primaryPlan || []).filter(item =>
-    item.type === 'TASK' && Number.isFinite(item.start) && Number.isFinite(item.end)
+    (item.type === 'TASK' || item.type === 'SLEEP') && Number.isFinite(item.start) && Number.isFinite(item.end)
   ).sort((a,b) => a.start-b.start);
-  const sleep = (primaryPlan || []).filter(item => item.type === 'SLEEP');
+  const sleep = primary.filter(item => item.type === 'SLEEP');
   const sleepEnd = sleep.length ? Math.max.apply(null,sleep.map(item => item.end)) : new Date(date).setHours(0,0,0,0);
   const boundaries = [sleepEnd,12,15,17].map((value,index) => {
     if (index === 0) return value;
@@ -728,38 +730,12 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
       const task = queue[i];
       const duration = task.durationMinutes*60000;
 
-      // Tìm task chính đầu tiên giao với khoảng dự kiến của task phụ.
-      let blocker = primary.find(item => item.end > cursor && item.start < cursor+duration);
-      if (blocker) {
-        // Task phụ đang xét và phần còn lại của nhóm được đặt sau task chính chắn nó.
+      // Giữ nguyên tuyệt đối giờ Start Time của task chính.
+      // Nếu khoảng dự kiến vướng task chính/giờ ngủ, đặt task phụ sau
+      // task đang chắn; tiếp tục dò cho đến khi tìm được đoạn không chồng lấn.
+      let blocker;
+      while ((blocker = primary.find(item => item.end > cursor && item.start < cursor+duration))) {
         cursor = blocker.end;
-      }
-
-      const itemStart = cursor;
-      const itemEnd = itemStart+duration;
-
-      // Nếu phải chèn sau một task chính, đẩy toàn bộ task chính phía sau
-      // để giữ đúng thứ tự: task phụ trước, task chính kế tiếp sau.
-      if (blocker) {
-        primary.forEach(item => {
-          if (item.start >= blocker.end) {
-            item.start += duration;
-            item.end += duration;
-          }
-        });
-      } else {
-        // Không có va chạm: giữ nguyên task chính nếu task phụ kết thúc trước nó.
-        // Nếu task phụ vừa chạm/đè task chính do sai lệch phút, xử lý như va chạm.
-        const lateBlocker = primary.find(item => item.start >= itemStart && item.start < itemEnd);
-        if (lateBlocker) {
-          cursor = lateBlocker.end;
-          primary.forEach(item => {
-            if (item.start >= lateBlocker.end) {
-              item.start += duration;
-              item.end += duration;
-            }
-          });
-        }
       }
 
       const start = cursor;
@@ -768,12 +744,12 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
       occurrence[key] = (occurrence[key] || 0)+1;
       const id = SCV3_makeId_(date,'SECONDARY|'+task.taskName,occurrence[key]);
       const description = SCV3.MARKER+id+']]'+
-        '\n🏫 CLASS: '+task.details.className+
-        '\n📌 CÔNG VIỆC: '+task.details.name+
-        '\n📝 NỘI DUNG: '+task.details.content+
-        '\n⏱️ DURING: '+task.details.duration+
-        '\n🗓️ BUỔI: '+labels[p]+
-        '\n⚙️ PHÂN BỔ: CHÈN THEO TRÌNH TỰ TASK CHÍNH';
+        '\\n🏫 CLASS: '+task.details.className+
+        '\\n📌 CÔNG VIỆC: '+task.details.name+
+        '\\n📝 NỘI DUNG: '+task.details.content+
+        '\\n⏱️ DURING: '+task.details.duration+
+        '\\n🗓️ BUỔI: '+labels[p]+
+        '\\n⚙️ PHÂN BỔ: CHÈN VÀO KHOẢNG TRỐNG, KHÔNG DỊCH START TIME TASK CHÍNH';
       secondaryPlan.push({
         id:id,
         type:'SECONDARY_TASK',
@@ -788,7 +764,8 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
     }
   }
 
-  // Trả về cả hai phần vì task chính phía sau có thể đã được đẩy theo.
+  const updatedPrimary = primaryPlan || [];
+  // Task chính được giữ nguyên Start Time và thời lượng.
   const updatedPrimary = (primaryPlan || []).map(item => {
     if (item.type !== 'TASK') return item;
     const changed = primary.find(task => task.id === item.id);
@@ -829,7 +806,7 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     if (!taskName) continue;
     const key = SCV3_normalize_(taskName);
     const details = master[key];
-    if (!details) throw new Error('KHÔNG TÌM THẤY MASTER TASK: '+taskName+'\nREADY: '+SCV3_DAYS[date.getDay() === 0 ? 6 : date.getDay()-1]+'\nVui lòng kiểm tra tên tại MASTER cột C.');
+    if (!details) throw new Error('KHÔNG TÌM THẤY MASTER TASK: '+taskName+'\\nREADY: '+SCV3_DAYS[date.getDay() === 0 ? 6 : date.getDay()-1]+'\\nVui lòng kiểm tra tên tại MASTER cột C.');
     if (!Number.isFinite(details.duration) || details.duration <= 0) throw new Error('DURING không hợp lệ: '+taskName);
     occurrence[key] = (occurrence[key] || 0)+1;
     tasks.push({name:taskName,details:details,occurrence:occurrence[key]});
@@ -845,18 +822,36 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
     type:'SLEEP',
     name:SCV3.SLEEP_TITLE,
     title:SCV3.SLEEP_TITLE,
-    description:SCV3.MARKER+sleepId+']]\n🌙 NGỦ ĐÊM\n📅 NGÀY: '+Utilities.formatDate(date,SCV3.TIMEZONE,'dd/MM/yyyy'),
+    description:SCV3.MARKER+sleepId+']]\\n🌙 NGỦ ĐÊM\\n📅 NGÀY: '+Utilities.formatDate(date,SCV3.TIMEZONE,'dd/MM/yyyy'),
     start:sleepDate.getTime(),
     end:sleepEnd.getTime(),
     color:CalendarApp.EventColor.GRAY
   });
-  let cursor = new Date(date);
-  cursor.setHours(Math.floor(SCV3.START_HOUR),Math.round((SCV3.START_HOUR%1)*60),0,0);
+
+  const dayStart = new Date(date);
+  dayStart.setHours(Math.floor(SCV3.START_HOUR),Math.round((SCV3.START_HOUR%1)*60),0,0);
+  let cursor = dayStart.getTime();
+  let previousTaskEnd = null;
+
   tasks.forEach((task,index) => {
     const details = task.details;
-    if (index > 0) cursor = new Date(cursor.getTime()+gapMinutes*60*1000);
-    const start = new Date(cursor);
-    const end = new Date(start.getTime()+details.duration*60*60*1000);
+    let start;
+    if (details.startTimeMinutes !== null && details.startTimeMinutes !== undefined) {
+      const fixed = new Date(date);
+      fixed.setHours(Math.floor(details.startTimeMinutes/60),details.startTimeMinutes%60,0,0);
+      start = fixed.getTime();
+    } else {
+      start = index === 0 ? cursor : Math.max(cursor,previousTaskEnd+gapMinutes*60000);
+    }
+
+    const end = start+details.duration*60*60*1000;
+    if (start < sleepEnd.getTime() && end > sleepDate.getTime()) {
+      throw new Error('XUNG ĐỘT GIỜ NGỦ: task "'+task.name+'" ('+Utilities.formatDate(new Date(start),SCV3.TIMEZONE,'HH:mm')+'–'+Utilities.formatDate(new Date(end),SCV3.TIMEZONE,'HH:mm')+') trùng với giờ ngủ '+sleepStart+'. Start Time cột I là cố định; vui lòng điều chỉnh dữ liệu.');
+    }
+    if (previousTaskEnd !== null && start < previousTaskEnd) {
+      throw new Error('XUNG ĐỘT START TIME: task "'+task.name+'" bắt đầu '+Utilities.formatDate(new Date(start),SCV3.TIMEZONE,'HH:mm')+' nhưng task chính trước kết thúc '+Utilities.formatDate(new Date(previousTaskEnd),SCV3.TIMEZONE,'HH:mm')+'. Start Time cột I là cố định nên hệ thống không tự dịch chuyển task.');
+    }
+
     const id = SCV3_makeId_(date,task.name,task.occurrence);
     const classUpper = details.className.toUpperCase();
     const category = String(details.category || '').toUpperCase();
@@ -878,10 +873,12 @@ function SCV3_buildDayPlan_(master,ready,date,gapMinutes,sleepStart,sleepDuratio
       name:task.name,
       title:title,
       description:description,
-      start:start.getTime(),
-      end:end.getTime(),
+      start:start,
+      end:end,
+      fixedStart:details.startTimeMinutes !== null && details.startTimeMinutes !== undefined,
       color:color
     });
+    previousTaskEnd = end;
     cursor = end;
   });
   return plan;
@@ -928,6 +925,29 @@ function SCV3_makeId_(date,name,occurrence) {
 }
 function SCV3_normalize_(value) {
   return String(value || '').normalize('NFC').trim().replace(/\s+/g,' ').toUpperCase();
+}
+function SCV3_parseTimeOfDay_(value,display) {
+  if (value === '' || value === null || value === undefined) return null;
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return value.getHours()*60+value.getMinutes();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const minutes = Math.round(value*24*60);
+    return minutes >= 0 && minutes < 1440 ? minutes : null;
+  }
+  const raw = String(display || value).trim();
+  if (!raw) return null;
+  const match = raw.match(/^(\\d{1,2}):(\\d{2})(?::\\d{2})?\\s*(AM|PM)?$/i);
+  if (!match) throw new Error('START TIME không hợp lệ: "'+raw+'". Định dạng yêu cầu HH:mm, ví dụ 07:30.');
+  let hour=Number(match[1]), minute=Number(match[2]);
+  if (minute>59 || hour>23) throw new Error('START TIME ngoài phạm vi 00:00–23:59: '+raw);
+  if (match[3]) {
+    const suffix=match[3].toUpperCase();
+    if (hour<1 || hour>12) throw new Error('START TIME AM/PM không hợp lệ: '+raw);
+    if (suffix==='AM') hour=hour===12?0:hour;
+    else hour=hour===12?12:hour+12;
+  }
+  return hour*60+minute;
 }
 function SCV3_number_(value) {
   if (typeof value === 'number') return value;
