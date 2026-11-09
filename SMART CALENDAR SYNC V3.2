@@ -681,9 +681,12 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
   const periodTasks = [[],[],[],[]];
   const occurrence = {};
   let currentPeriod = '';
+  let currentGroup = '';
   for (let r=0;r<values.length;r++) {
     const label = String(values[r][0] || '').trim();
     if (label) currentPeriod = label;
+    const groupLabel = String(values[r][1] || '').trim();
+    if (groupLabel) currentGroup = groupLabel;
     const period = SCV3_parseSecondaryPeriod_(currentPeriod);
     for (const slot of slots) {
       const taskName = String(values[r][slot.taskOffset] || '').trim();
@@ -698,7 +701,7 @@ function SCV3_buildSecondaryDayPlan_(daySheet,master,date,primaryPlan) {
       }
       periodTasks[period.index].push({
         taskName:taskName,details:details,durationMinutes:minutes,row:firstRow+r,
-        group:String(values[r][1] || '').trim()
+        group:currentGroup || ('__ROW_'+(firstRow+r))
       });
     }
   }
