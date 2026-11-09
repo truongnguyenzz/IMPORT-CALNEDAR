@@ -142,8 +142,8 @@ function SCV3_sync(options) {
         if (id && !eventById.has(id)) eventById.set(id,event);
       });
 
-      // Thứ tự operations: DELETE (nếu bật) -> toàn bộ task phụ -> task chính.
-      const orderedPlans = secondaryPlans.concat(primaryPlans);
+      // Thứ tự operations: DELETE (nếu bật) -> task chính có Start Time -> task chính không có Start Time -> task phụ.
+      const orderedPlans = primaryPlans.concat(secondaryPlans);
       orderedPlans.forEach(day => {
         day.plan.forEach(item => {
           stats.total++;
